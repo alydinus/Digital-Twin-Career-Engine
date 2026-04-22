@@ -1,0 +1,15 @@
+# Core
+pandas>=2.0.0
+streamlit>=1.35.0
+python-dotenv>=1.0.0
+
+# ML (опционально — для будущего TF-IDF/embedding матчинга)
+scikit-learn>=1.4.0
+numpy>=1.26.0
+
+# Testing
+pytest>=8.0.0
+
+# LLM (опционально — раскомментировать при наличии API-ключа)
+# anthropic>=0.28.0
+# openai>=1.30.0

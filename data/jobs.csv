@@ -1,0 +1,6 @@
+role,required_skills,description
+Backend Engineer,"Python;SQL;Docker;System Design;Microservices;Git;REST API;PostgreSQL","Разработка серверной логики, API и баз данных"
+DevOps Engineer,"Docker;Kubernetes;AWS;Linux;CI/CD;Bash;Terraform;Git","Инфраструктура, автоматизация деплоя и мониторинг"
+Data Scientist,"Python;Pandas;SQL;Machine Learning;Statistics;NumPy;Jupyter;Matplotlib","Анализ данных, построение ML-моделей и визуализация"
+ML Engineer,"Python;PyTorch;MLOps;Docker;SQL;Math;Scikit-learn;Git","Разработка и деплой ML-моделей в продакшн"
+Frontend Engineer,"JavaScript;React;HTML;CSS;TypeScript;Git;REST API;Figma","Разработка пользовательских интерфейсов"

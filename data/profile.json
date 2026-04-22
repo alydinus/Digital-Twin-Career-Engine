@@ -1,0 +1,29 @@
+{
+  "_comment": "Шаблон профиля пользователя. Замените значения своими данными или подключите парсер резюме.",
+  "name": "Alydin",
+  "hard_skills": [
+    "Python",
+    "SQL",
+    "Docker",
+    "Git",
+    "Linux",
+    "Bash"
+  ],
+  "soft_skills": [
+    "problem solving",
+    "teamwork",
+    "communication",
+    "critical thinking"
+  ],
+  "interests": [
+    "backend",
+    "data",
+    "AI",
+    "automation"
+  ],
+  "_meta": {
+    "source": "template",
+    "version": "1.0",
+    "note": "Future: будет заменён парсером резюме (PDF/LinkedIn)"
+  }
+}
