@@ -19,6 +19,10 @@ env/
 *.env.local
 *.key
 
+# Telegram session (содержит токен авторизации — не коммитить!)
+*.session
+*.session-journal
+
 # Streamlit
 .streamlit/
 

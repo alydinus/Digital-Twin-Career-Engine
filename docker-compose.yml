@@ -1,0 +1,40 @@
+# =============================================================================
+# Digital Twin Career Engine — Docker Compose
+# =============================================================================
+# Запуск:   docker-compose up --build
+# Фон:      docker-compose up -d --build
+# Стоп:     docker-compose down
+# Логи:     docker-compose logs -f
+# =============================================================================
+
+services:
+
+  career-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: digital-twin-career-engine
+
+    # --- порты ---
+    ports:
+      - "8501:8501"       # Streamlit UI → http://localhost:8501
+
+    # --- переменные окружения из .env (ключи НЕ попадают в образ) ---
+    env_file:
+      - .env
+
+    # --- тома: данные пользователя хранятся на хосте ---
+    volumes:
+      - ./data:/app/data              # profile.json, jobs.csv, telegram_channels.json
+      - ./telegram_bot:/app/telegram_bot  # сессии Telethon (*.session файлы)
+
+    # --- перезапуск при сбое ---
+    restart: unless-stopped
+
+    # --- healthcheck ---
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

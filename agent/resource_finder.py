@@ -13,6 +13,7 @@ Future hooks:
 """
 
 from __future__ import annotations
+from utils.llm_client import call_llm_json, is_available
 
 import os
 from typing import Optional
@@ -302,32 +303,7 @@ def _find_resources_llm(skill: str) -> dict:
     Только JSON, без пояснений.
     """
 
-    if provider == "anthropic":
-        import anthropic  # pip install anthropic
-        client   = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        import json
-        text = response.content[0].text.strip()
-        data = json.loads(text)
-
-    elif provider == "openai":
-        import openai  # pip install openai
-        openai.api_key = api_key
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        import json
-        data = json.loads(response.choices[0].message.content)
-
-    else:
-        raise ValueError(f"Неизвестный провайдер: {provider}")
-
+    data = call_llm_json(prompt, max_tokens=512)
     return {"skill": skill, **data}
 
 

@@ -1,0 +1,43 @@
+# =============================================================================
+# .dockerignore — что НЕ копировать в Docker-образ
+# =============================================================================
+
+# Секреты — передаются через env_file в docker-compose, НЕ копировать!
+.env
+*.env.local
+
+# Git
+.git/
+.gitignore
+
+# Python кеш
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Telethon сессии (монтируются как volume, не копировать)
+*.session
+*.session-journal
+
+# Тесты (опционально оставить, если нужен pytest в контейнере)
+# tests/

@@ -1,0 +1,196 @@
+{
+  "_comment": "Список Telegram-каналов с IT-вакансиями для парсинга",
+  "channels": [
+    {
+      "username": "getmatch",
+      "name": "getmatch",
+      "tags": [
+        "backend",
+        "frontend",
+        "fullstack",
+        "devops",
+        "data"
+      ]
+    },
+    {
+      "username": "python_jobs_ru",
+      "name": "Python Jobs RU",
+      "tags": [
+        "python",
+        "data",
+        "ml",
+        "backend"
+      ]
+    },
+    {
+      "username": "devops_jobs_ru",
+      "name": "DevOps Jobs RU",
+      "tags": [
+        "devops",
+        "cloud",
+        "infrastructure"
+      ]
+    },
+    {
+      "username": "data_jobs_ru",
+      "name": "Data Science Jobs",
+      "tags": [
+        "data",
+        "ml",
+        "analytics"
+      ]
+    },
+    {
+      "username": "frontend_jobs",
+      "name": "Frontend Jobs",
+      "tags": [
+        "frontend",
+        "react",
+        "vue",
+        "javascript"
+      ]
+    },
+    {
+      "username": "backend_jobs_ru",
+      "name": "Backend Jobs RU",
+      "tags": [
+        "backend",
+        "java",
+        "python",
+        "go"
+      ]
+    },
+    {
+      "username": "remote_jobs_ru",
+      "name": "Remote Jobs RU",
+      "tags": [
+        "remote",
+        "fullstack",
+        "backend",
+        "frontend"
+      ]
+    },
+    {
+      "username": "hh_it_jobs",
+      "name": "HH IT Jobs",
+      "tags": [
+        "backend",
+        "frontend",
+        "devops",
+        "data"
+      ]
+    },
+    {
+      "username": "tproger_jobs",
+      "name": "Tproger Jobs",
+      "tags": [
+        "backend",
+        "frontend",
+        "mobile",
+        "data"
+      ]
+    },
+    {
+      "username": "itjobs_ru",
+      "name": "IT Jobs RU",
+      "tags": [
+        "backend",
+        "devops",
+        "data",
+        "mobile"
+      ]
+    },
+    {
+      "username": "dev_kg",
+      "name": "Dev KG",
+      "tags": [
+        "backend",
+        "frontend",
+        "devops",
+        "data",
+        "fullstack"
+      ]
+    },
+    {
+      "username": "it_jobs_kg",
+      "name": "IT Jobs KG",
+      "tags": [
+        "backend",
+        "frontend",
+        "devops",
+        "data"
+      ]
+    },
+    {
+      "username": "python_jobs",
+      "name": "Python Jobs",
+      "tags": [
+        "python",
+        "data",
+        "ml",
+        "backend"
+      ]
+    },
+    {
+      "username": "findwork",
+      "name": "DEV KG",
+      "tags": [
+        "backend",
+        "frontend",
+        "devops",
+        "data"
+      ]
+    }
+  ],
+  "keywords": {
+    "backend": [
+      "python",
+      "django",
+      "fastapi",
+      "flask",
+      "java",
+      "spring",
+      "go",
+      "golang",
+      "node",
+      "backend",
+      "бэкенд"
+    ],
+    "frontend": [
+      "react",
+      "vue",
+      "angular",
+      "javascript",
+      "typescript",
+      "frontend",
+      "фронтенд"
+    ],
+    "devops": [
+      "devops",
+      "kubernetes",
+      "docker",
+      "aws",
+      "terraform",
+      "ci/cd",
+      "infrastructure",
+      "devops"
+    ],
+    "data": [
+      "data scientist",
+      "data engineer",
+      "ml engineer",
+      "pandas",
+      "spark",
+      "airflow",
+      "дата"
+    ],
+    "ml": [
+      "ml",
+      "machine learning",
+      "pytorch",
+      "tensorflow",
+      "llm",
+      "ai engineer"
+    ]
+  }
+}
