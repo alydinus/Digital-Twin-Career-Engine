@@ -1,21 +1,21 @@
 """
-Application Layer — Streamlit UI
-Digital Twin Career Engine
+Application Layer -- Streamlit UI
+Digital Twin Career Engine v2
 
-Вкладки:
-  1. Predict    — матчинг навыков, bar chart, ресурсы
-  2. Roadmap    — GenAI план развития по фазам
-  3. Interview  — вопросы для подготовки к собеседованию
-  4. Job Match  — вставь вакансию → анализ соответствия
-  5. Resume     — парсинг текста резюме
-  6. About      — архитектура проекта
+Tabs:
+  1. CV Upload   -- PDF + text resume, auto-profile
+  2. CV Roast    -- AI critique of your CV
+  3. Telegram    -- job search + infographics (connected to CV)
+  4. Roadmap     -- GenAI career plan
+  5. Interview   -- interview preparation
+  6. About       -- architecture
 
-Запуск: streamlit run app/app.py
+Run: streamlit run app/app.py
 """
 
 import sys, json, os
 from pathlib import Path
-from io import BytesIO
+from collections import Counter
 
 import streamlit as st
 import pandas as pd
@@ -26,30 +26,27 @@ import numpy as np
 
 ROOT = Path(__file__).parent.parent
 
-# ── Загрузка переменных из .env ──────────────────────────────────────────────
-# override=True: перезаписывает уже существующие переменные окружения,
-# чтобы изменения в .env подхватились без перезапуска процесса
 try:
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env", override=True)
 except ImportError:
-    pass  # python-dotenv не установлен — переменные берутся из окружения
+    pass
+
 sys.path.insert(0, str(ROOT))
 
 from model.predictor        import load_profile, load_jobs, predict_top_roles, normalize_skills
-from model.semantic_matcher import semantic_match_score, hybrid_score, SKLEARN_AVAILABLE
+from model.semantic_matcher import SKLEARN_AVAILABLE
 from agent.resource_finder  import find_resources
 from agent.career_coach     import generate_roadmap
 from agent.interview_coach  import generate_interview_questions
 from utils.resume_parser    import parse_resume
-from utils.job_parser       import parse_job_description, gap_analysis
 
 # ---------------------------------------------------------------------------
 # Page config & CSS
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Digital Twin Career Engine",
-    page_icon="🎯",
+    page_icon="\U0001f3af",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -60,16 +57,18 @@ st.markdown("""
                  border-radius:12px; padding:2px 10px; margin:2px; font-size:.82em; color:#2b6cb0; }
 .skill-missing { background:#fff5f5; border-color:#fc8181; color:#c53030; }
 .skill-match   { background:#f0fff4; border-color:#68d391; color:#276749; }
-.phase-card    { border-left:4px solid #4299e1; padding:8px 12px; margin:6px 0;
-                 background:#f7fafc; border-radius:0 8px 8px 0; }
-.metric-box    { text-align:center; padding:12px; background:#f7fafc;
-                 border-radius:10px; border:1px solid #e2e8f0; }
-.q-card        { border-left:4px solid #9f7aea; padding:8px 12px; margin:6px 0;
-                 background:#faf5ff; border-radius:0 8px 8px 0; }
-.fit-strong    { color:#276749; font-weight:bold; }
-.fit-good      { color:#744210; font-weight:bold; }
-.fit-partial   { color:#c05621; font-weight:bold; }
-.fit-weak      { color:#c53030; font-weight:bold; }
+.phase-card  { border-left:4px solid #4299e1; padding:10px 14px; margin:6px 0;
+               background:rgba(66,153,225,0.10); border-radius:0 8px 8px 0; }
+.roast-issue { border-left:4px solid #fc8181; padding:10px 14px; margin:8px 0;
+               background:rgba(252,129,129,0.12); border-radius:0 8px 8px 0; }
+.roast-issue b { color:#fc8181; }
+.roast-praise{ border-left:4px solid #68d391; padding:10px 14px; margin:8px 0;
+               background:rgba(104,211,145,0.12); border-radius:0 8px 8px 0; }
+.roast-praise b { color:#68d391; }
+.q-card      { border-left:4px solid #9f7aea; padding:8px 12px; margin:6px 0;
+               background:rgba(159,122,234,0.10); border-radius:0 8px 8px 0; }
+.cv-banner   { border-left:4px solid #4299e1; border-radius:0 8px 8px 0;
+               background:rgba(66,153,225,0.10); padding:10px 16px; margin:8px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,46 +76,294 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 def tags(skills, cls="skill-tag"):
-    return " ".join(f'<span class="{cls}">{s}</span>' for s in skills) if skills else "<i>—</i>"
+    return " ".join(f'<span class="{cls}">{s}</span>' for s in skills) if skills else "<i>&#8212;</i>"
 
-def export_md(profile, top_roles):
-    lines = [f"# Career Report — {profile.get('name','User')}", "",
-             "## Профиль",
-             f"**Hard skills:** {', '.join(profile.get('hard_skills',[]))}",
-             f"**Soft skills:** {', '.join(profile.get('soft_skills',[]))}", "",
-             "## Топ профессий"]
-    for i, r in enumerate(top_roles, 1):
-        lines += [f"### {i}. {r['role']} — {r['score_pct']}%",
-                  f"**Есть:** {', '.join(r['matched_skills']) or '—'}",
-                  f"**Нет:**  {', '.join(r['missing_skills']) or '—'}", ""]
-    return "\n".join(lines)
 
-def radar_chart(results, score_key="score_pct"):
-    """Строит radar chart для всех ролей."""
-    roles  = [r["role"].replace(" Engineer","").replace(" Scientist","") for r in results]
-    scores = [r.get(score_key, r["score_pct"]) / 100 for r in results]
-    N      = len(roles)
-    if N < 3:
+def get_active_profile(sidebar_profile: dict) -> dict:
+    cv = st.session_state.get("cv_profile")
+    if cv and (cv.get("hard_skills") or cv.get("soft_skills")):
+        return cv
+    return sidebar_profile
+
+
+def _enrich_profile(profile: dict) -> dict:
+    hard = profile.get("hard_skills", [])
+    soft = profile.get("soft_skills", [])
+    profile.setdefault("_hard_skills_norm", normalize_skills(hard))
+    profile.setdefault("_soft_skills_norm", normalize_skills(soft))
+    profile.setdefault("_all_skills_norm",
+                        normalize_skills(hard) | normalize_skills(soft))
+    return profile
+
+
+# ---------------------------------------------------------------------------
+# CV Roast logic
+# ---------------------------------------------------------------------------
+
+_MARKET_DEMAND = {
+    "python": 90, "docker": 85, "postgresql": 80, "git": 95,
+    "linux": 75, "aws": 70, "kubernetes": 60, "fastapi": 55,
+    "django": 50, "redis": 65, "ci/cd": 70, "github actions": 55,
+    "rest api": 80, "sql": 85, "javascript": 75, "typescript": 60,
+    "react": 65, "go": 45, "java": 55, "terraform": 40,
+}
+
+
+def _roast_rules(profile: dict, harshness: int) -> dict:
+    hard      = [s.lower() for s in profile.get("hard_skills", [])]
+    hard_orig = profile.get("hard_skills", [])
+    soft      = profile.get("soft_skills", [])
+    interests = profile.get("interests", [])
+    name      = profile.get("name", "").strip()
+    issues, praise, tips = [], [], []
+
+    if not name or name in ("--", "User", ""):
+        issues.append(("No name", "Anonymous resumes get rejected first. Add your full name."))
+
+    n_hard = len(hard_orig)
+    if n_hard == 0:
+        issues.append(("Zero hard skills", "No skills = no resume. Add everything you have worked with."))
+    elif n_hard < 5:
+        issues.append(("Too few skills",
+                        f"Only {n_hard} hard skill(s). Recruiters expect 6-8 minimum. "
+                        "Add frameworks, tools, versions -- everything you have used."))
+    elif n_hard >= 15:
+        praise.append(("Wide tech stack", f"{n_hard} hard skills -- excellent coverage."))
+    else:
+        praise.append(("Decent stack", f"{n_hard} hard skills -- solid starting point."))
+
+    langs = {"python","java","go","golang","javascript","typescript",
+             "rust","c++","c#","kotlin","swift","scala","php","ruby"}
+    found_langs = [s for s in hard if s in langs]
+    if not found_langs:
+        issues.append(("No programming language",
+                        "Recruiter checks language first. State your main language explicitly."))
+    elif len(found_langs) == 1:
+        praise.append(("Primary language", f"Listed {found_langs[0].title()} -- good."))
+    else:
+        praise.append(("Multi-language", f"{', '.join(s.title() for s in found_langs[:3])}."))
+
+    dbs = {"postgresql","mysql","mongodb","redis","sqlite","sql",
+           "cassandra","elasticsearch","clickhouse","dynamodb"}
+    found_dbs = [s for s in hard if s in dbs]
+    if not found_dbs:
+        issues.append(("No databases",
+                        "Almost every job requires SQL or NoSQL. Add at least PostgreSQL or MongoDB."))
+        tips.append("Learn PostgreSQL: https://www.postgresqltutorial.com/")
+    else:
+        praise.append(("DB in stack", f"{', '.join(s.upper() for s in found_dbs[:3])}."))
+
+    devops = {"docker","kubernetes","k8s","terraform","ansible","helm"}
+    found_devops = [s for s in hard if s in devops]
+    if not found_devops:
+        issues.append(("No containerization",
+                        "Docker is a baseline skill for any backend/devops role in 2024. "
+                        "You are missing 70%+ of job listings."))
+        tips.append("Docker quickstart: https://docs.docker.com/get-started/")
+    else:
+        praise.append(("Containers", f"Has {', '.join(s.title() for s in found_devops[:3])}."))
+
+    clouds = {"aws","gcp","azure","digitalocean","cloudflare"}
+    found_cloud = [s for s in hard if s in clouds]
+    if not found_cloud:
+        issues.append(("No cloud platform",
+                        "AWS/GCP/Azure appears in 60%+ of listings. Even basic AWS is a big plus."))
+        tips.append("AWS Free Tier: https://aws.amazon.com/free/")
+    else:
+        praise.append(("Cloud", f"{', '.join(s.upper() for s in found_cloud)}."))
+
+    cicd = {"ci/cd","github actions","gitlab ci","jenkins","circleci"}
+    if harshness >= 5 and not any(s in hard for s in cicd):
+        issues.append(("No CI/CD",
+                        "Deployment automation is standard. GitHub Actions can be learned in a day."))
+
+    market_missing = []
+    for skill, demand in sorted(_MARKET_DEMAND.items(), key=lambda x: -x[1]):
+        if skill not in hard and demand >= 70:
+            market_missing.append(f"{skill.title()} ({demand}%)")
+        if len(market_missing) >= 3:
+            break
+    if market_missing:
+        issues.append(("High-demand skills missing",
+                        "Missing skills with high market demand: " + ", ".join(market_missing) +
+                        ". Prioritize learning these."))
+
+    frontend_s = {"react","vue","angular","html","css","javascript","typescript"}
+    backend_s  = {"python","java","go","fastapi","django","flask","spring"}
+    data_s     = {"pandas","numpy","scikit-learn","pytorch","tensorflow","spark"}
+    has_back  = any(s in hard for s in backend_s)
+    has_front = any(s in hard for s in frontend_s)
+    has_data  = any(s in hard for s in data_s)
+
+    if has_back and not has_front and not has_data:
+        praise.append(("Clear backend focus", "Specialization is visible -- that is a plus."))
+    elif has_front and has_back:
+        praise.append(("Fullstack stack", "Frontend + Backend present."))
+    elif has_data:
+        praise.append(("Data/ML stack", "Data science skills present."))
+
+    if not soft:
+        issues.append(("No soft skills",
+                        "HR and managers check soft skills. Add teamwork, communication, ownership."))
+    elif len(soft) >= 3:
+        praise.append(("Soft skills present", f"{len(soft)} listed -- sufficient."))
+
+    if not interests and harshness >= 4:
+        issues.append(("No interests listed",
+                        "Interests show motivation and help match with company culture."))
+
+    n = len(issues)
+    if n == 0:
+        verdict, text, score = "Top profile", "Almost nothing to criticize -- strong application.", 9
+    elif n <= 2:
+        verdict, text, score = "Good profile with gaps", "Solid overall, but a few things need fixing before sending.", 7
+    elif n <= 4:
+        verdict, text, score = "Average profile -- work needed", "Recruiters will notice these gaps. Fix top 2 issues for a big boost.", 5
+    elif n <= 6:
+        verdict, text, score = "Weak profile -- needs rework", "Many red flags. Auto-screening will filter this out.", 3
+    else:
+        verdict, text, score = "Critical state", "Seriously overhaul before sending -- will be rejected at first stage.", 1
+
+    if harshness >= 8 and score < 7:
+        text += f" (Harshness {harshness}/10 -- no sugarcoating.)"
+
+    return {
+        "issues": issues, "praise": praise, "tips": tips,
+        "verdict": verdict, "roast_text": text,
+        "roast_score": score, "source": "rule-based",
+    }
+
+
+def generate_cv_roast(profile: dict, harshness: int = 5) -> dict:
+    if os.environ.get("LLM_API_KEY", "").strip():
+        try:
+            from utils.llm_client import call_llm_json
+            prompt = (
+                f"You are a harsh career mentor (harshness {harshness}/10, 10=merciless).\n"
+                "Give a deep critical analysis of this IT profile. Analyze:\n"
+                "- Stack completeness and relevance (2024 market)\n"
+                "- Skill balance (backend/frontend/devops/data)\n"
+                "- Market demand alignment\n"
+                "- What specifically to add/remove\n\n"
+                + json.dumps({k:v for k,v in profile.items() if not k.startswith("_")},
+                             ensure_ascii=False, indent=2)
+                + "\n\nReturn JSON:\n"
+                + '{\n  "verdict": "one-line verdict",\n  "roast_text": "2-3 sentence honest summary",\n  "roast_score": <1-10 where 10=excellent>,\n  "issues": [["issue title", "explanation + what to do"], ...],\n  "praise": [["strength title", "why this is strong"], ...],\n  "tips": ["concrete recommendation 1", "recommendation 2"]\n}\nJSON only. Be specific and helpful.'
+            )
+            data = call_llm_json(prompt, max_tokens=1500)
+            data["source"] = "llm"
+            return data
+        except Exception:
+            pass
+    return _roast_rules(profile, harshness)
+
+
+# ---------------------------------------------------------------------------
+# Infographic helpers
+# ---------------------------------------------------------------------------
+
+def _fig_match_bars(jobs):
+    n = min(len(jobs), 15)
+    fig, ax = plt.subplots(figsize=(8, max(3, n * 0.48)))
+    fig.patch.set_facecolor("none"); ax.set_facecolor("none")
+    names  = [f"{j.role_name[:28]}  ({j.channel_name})" for j in jobs[:n]]
+    scores = [j.match_pct for j in jobs[:n]]
+    colors = ["#68d391" if s >= 70 else "#f6ad55" if s >= 40 else "#fc8181" for s in scores]
+    bars = ax.barh(names, scores, color=colors, edgecolor="white", linewidth=0.4)
+    ax.set_xlim(0, 105)
+    ax.set_xlabel("Match %", fontsize=10, color="#a0aec0")
+    ax.set_title("Job relevance to your profile", fontsize=12, color="#e2e8f0", pad=10)
+    ax.tick_params(axis="y", labelsize=8, colors="#a0aec0")
+    ax.tick_params(axis="x", labelsize=9, colors="#a0aec0")
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#4a5568"); ax.spines["bottom"].set_color("#4a5568")
+    ax.axvline(70, color="#68d391", linestyle="--", linewidth=0.8, alpha=0.6)
+    ax.axvline(40, color="#f6ad55", linestyle="--", linewidth=0.8, alpha=0.6)
+    for bar, s in zip(bars, scores):
+        ax.text(s + 1, bar.get_y() + bar.get_height() / 2,
+                f"{s}%", va="center", fontsize=8, color="#a0aec0")
+    from matplotlib.patches import Patch
+    ax.legend(handles=[
+        Patch(facecolor="#68d391", label=">=70% Strong"),
+        Patch(facecolor="#f6ad55", label="40-69% Partial"),
+        Patch(facecolor="#fc8181", label="<40% Weak"),
+    ], loc="lower right", fontsize=8, framealpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def _fig_skills_gap(jobs, top_n=12):
+    cnt = Counter(s.lower() for j in jobs for s in j.you_need)
+    if not cnt:
         return None
+    skills, counts = zip(*cnt.most_common(top_n))
+    colors = ["#fc8181" if c >= 5 else "#f6ad55" if c >= 3 else "#90cdf4" for c in counts]
+    fig, ax = plt.subplots(figsize=(8, 4))
+    fig.patch.set_facecolor("none"); ax.set_facecolor("none")
+    ax.bar(skills, counts, color=colors, edgecolor="white")
+    ax.set_title("Skills you are missing (by job count)", fontsize=12, color="#e2e8f0", pad=10)
+    ax.set_ylabel("Jobs requiring this", fontsize=10, color="#a0aec0")
+    ax.tick_params(axis="x", rotation=38, labelsize=8, colors="#a0aec0")
+    ax.tick_params(axis="y", labelsize=9, colors="#a0aec0")
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#4a5568"); ax.spines["bottom"].set_color("#4a5568")
+    for i, (_, c) in enumerate(zip(skills, counts)):
+        ax.text(i, c + 0.05, str(c), ha="center", fontsize=8, color="#a0aec0")
+    plt.tight_layout()
+    return fig
 
-    angles = [n / float(N) * 2 * np.pi for n in range(N)]
-    angles += angles[:1]
-    scores += scores[:1]
 
-    fig, ax = plt.subplots(figsize=(4, 4), subplot_kw=dict(polar=True))
-    ax.set_facecolor("#f7fafc")
-    fig.patch.set_facecolor("#f7fafc")
+def _fig_seniority_pie(jobs):
+    cnt = Counter(j.seniority for j in jobs)
+    colors_map = {"senior":"#fc8181","middle":"#f6ad55","junior":"#68d391"}
+    labels, vals = zip(*cnt.most_common())
+    colors = [colors_map.get(l, "#90cdf4") for l in labels]
+    fig, ax = plt.subplots(figsize=(4, 4))
+    fig.patch.set_facecolor("none"); ax.set_facecolor("none")
+    wedges, texts, autotexts = ax.pie(vals, labels=labels, colors=colors,
+                                       autopct="%1.0f%%", startangle=90)
+    for t in texts + autotexts:
+        t.set_color("#e2e8f0")
+    ax.set_title("Seniority breakdown", fontsize=11, color="#e2e8f0", pad=10)
+    plt.tight_layout()
+    return fig
 
-    ax.plot(angles, scores, "o-", linewidth=2, color="#4299e1")
-    ax.fill(angles, scores, alpha=0.25, color="#4299e1")
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(roles, size=9)
-    ax.set_ylim(0, 1)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(["25%","50%","75%","100%"], size=7, color="#718096")
-    ax.grid(color="#e2e8f0", linestyle="--", linewidth=0.5)
-    ax.set_title("Skill Coverage", size=11, pad=14, color="#2d3748")
+
+def _fig_channels(jobs):
+    cnt = Counter(j.channel_name for j in jobs)
+    if len(cnt) < 2:
+        return None
+    channels, nums = zip(*cnt.most_common())
+    fig, ax = plt.subplots(figsize=(5, max(2.5, len(channels) * 0.45)))
+    fig.patch.set_facecolor("none"); ax.set_facecolor("none")
+    ax.barh(channels, nums, color="#4299e1", edgecolor="white")
+    ax.set_title("Jobs per channel", fontsize=11, color="#e2e8f0", pad=10)
+    ax.tick_params(axis="y", labelsize=9, colors="#a0aec0")
+    ax.tick_params(axis="x", labelsize=9, colors="#a0aec0")
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#4a5568"); ax.spines["bottom"].set_color("#4a5568")
+    for i, n in enumerate(nums):
+        ax.text(n + 0.05, i, str(n), va="center", fontsize=9, color="#a0aec0")
+    plt.tight_layout()
+    return fig
+
+
+def _fig_match_histogram(jobs):
+    scores = [j.match_pct for j in jobs]
+    fig, ax = plt.subplots(figsize=(5, 3))
+    fig.patch.set_facecolor("none"); ax.set_facecolor("none")
+    ax.hist(scores, bins=10, range=(0, 100), color="#4299e1", edgecolor="white", alpha=0.85)
+    ax.axvline(np.mean(scores), color="#fc8181", linestyle="--",
+               linewidth=1.5, label=f"Avg: {int(np.mean(scores))}%")
+    ax.set_xlabel("Match %", fontsize=10, color="#a0aec0")
+    ax.set_ylabel("Jobs", fontsize=10, color="#a0aec0")
+    ax.set_title("Match score distribution", fontsize=11, color="#e2e8f0", pad=10)
+    ax.legend(fontsize=9)
+    ax.tick_params(colors="#a0aec0")
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#4a5568"); ax.spines["bottom"].set_color("#4a5568")
     plt.tight_layout()
     return fig
 
@@ -124,167 +371,451 @@ def radar_chart(results, score_key="score_pct"):
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
+
 def sidebar_profile():
-    st.sidebar.header("👤 Профиль")
+    st.sidebar.header("Profile")
+
+    if "cv_profile" in st.session_state:
+        cv = st.session_state["cv_profile"]
+        st.sidebar.success(
+            f"CV loaded: **{cv.get('name','--')}**\n"
+            f"{len(cv.get('hard_skills',[]))} hard / "
+            f"{len(cv.get('soft_skills',[]))} soft skills"
+        )
+        if st.sidebar.button("Clear CV", use_container_width=True):
+            del st.session_state["cv_profile"]
+            st.rerun()
+        st.sidebar.divider()
+
     with open(ROOT / "data" / "profile.json", encoding="utf-8") as f:
         default = json.load(f)
 
-    name      = st.sidebar.text_input("Имя", value=default.get("name",""))
-    hard_raw  = st.sidebar.text_area("Hard Skills (через запятую)",
-                    value=", ".join(default.get("hard_skills",[])), height=80)
-    soft_raw  = st.sidebar.text_area("Soft Skills (через запятую)",
-                    value=", ".join(default.get("soft_skills",[])), height=60)
-    inter_raw = st.sidebar.text_area("Интересы (через запятую)",
-                    value=", ".join(default.get("interests",[])), height=60)
-    top_n     = st.sidebar.slider("Топ-N профессий", 1, 5, 3)
+    name      = st.sidebar.text_input("Name", value=default.get("name", ""))
+    hard_raw  = st.sidebar.text_area("Hard Skills (comma-separated)",
+                    value=", ".join(default.get("hard_skills", [])), height=80)
+    soft_raw  = st.sidebar.text_area("Soft Skills (comma-separated)",
+                    value=", ".join(default.get("soft_skills", [])), height=60)
+    inter_raw = st.sidebar.text_area("Interests (comma-separated)",
+                    value=", ".join(default.get("interests", [])), height=50)
 
     st.sidebar.divider()
-    llm_key = st.sidebar.text_input("🔑 LLM API Key (опц.)", type="password",
-                                    placeholder="sk-ant-... или sk-...")
+    llm_key = st.sidebar.text_input("LLM API Key (optional)", type="password",
+                                     placeholder="sk-ant-... / sk-...")
     if llm_key:
         os.environ["LLM_API_KEY"] = llm_key
-        st.sidebar.success("LLM активирован")
-
-    use_sem = st.sidebar.toggle("🧠 Semantic Matching", value=False)
-    st.sidebar.caption("💡 Вкладка **Resume** для авто-заполнения из резюме")
+        st.sidebar.success("LLM activated")
 
     parse = lambda raw: [s.strip() for s in raw.split(",") if s.strip()]
-    ns    = normalize_skills(parse(hard_raw)) | normalize_skills(parse(soft_raw))
+    ns = normalize_skills(parse(hard_raw)) | normalize_skills(parse(soft_raw))
     return {
         "name": name, "hard_skills": parse(hard_raw),
         "soft_skills": parse(soft_raw), "interests": parse(inter_raw),
         "_hard_skills_norm": normalize_skills(parse(hard_raw)),
         "_soft_skills_norm": normalize_skills(parse(soft_raw)),
         "_all_skills_norm":  ns,
-    }, top_n, use_sem
+    }
 
 
 # ---------------------------------------------------------------------------
-# Tab 1 — Predict
+# Tab 1 -- CV Upload
 # ---------------------------------------------------------------------------
-def tab_predict(profile, top_n, use_semantic):
-    col_l, col_r = st.columns([1, 2], gap="large")
 
+def tab_cv_upload():
+    st.subheader("CV Upload")
+    st.caption("Upload PDF or paste text -- skills will flow into Telegram Jobs and Roadmap automatically")
+
+    has_llm = bool(os.environ.get("LLM_API_KEY", ""))
+
+    from utils.pdf_parser import get_available_backend
+    backend = get_available_backend()
+
+    col_b, col_l = st.columns(2)
+    with col_b:
+        if "not installed" not in backend and "не установлена" not in backend:
+            st.success(f"PDF backend: `{backend}`")
+        else:
+            st.warning("pdfplumber not installed  -->  `pip install pdfplumber`")
     with col_l:
-        st.subheader(f"👤 {profile['name']}")
+        if has_llm:
+            st.success("LLM mode active")
+        else:
+            st.info("Regex fallback (add LLM_API_KEY for AI parsing)")
+
+    if "cv_profile" in st.session_state:
+        cv = st.session_state["cv_profile"]
+        st.markdown(
+            f'<div class="cv-banner">CV loaded: <b>{cv.get("name","--")}</b> ',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            f'&nbsp;&middot; {len(cv.get("hard_skills",[]))} hard ',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            f'&nbsp;&middot; {len(cv.get("soft_skills",[]))} soft skills</div>',
+            unsafe_allow_html=True
+        )
+
+    tab_pdf, tab_txt = st.tabs(["PDF file", "Text resume"])
+
+    with tab_pdf:
+        uploaded = st.file_uploader("Choose PDF:", type=["pdf"])
+        if uploaded:
+            st.info(f"`{uploaded.name}` -- {uploaded.size // 1024} KB")
+            if st.button("Parse PDF", type="primary"):
+                with st.spinner("Reading PDF..."):
+                    try:
+                        from utils.pdf_parser import parse_pdf_resume
+                        parsed = parse_pdf_resume(uploaded.read(), use_llm=has_llm)
+                        _store_cv(parsed)
+                    except RuntimeError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+    with tab_txt:
+        sample = ("Ivan Petrov -- Senior Backend Developer\n"
+                  "Stack: Python, FastAPI, PostgreSQL, Redis, Docker, Kubernetes, AWS, Kafka\n"
+                  "Also used: Terraform, GitHub Actions, Grafana, Prometheus\n"
+                  "Soft skills: problem solving, teamwork, leadership\n"
+                  "Interests: backend, cloud, distributed systems")
+        text = st.text_area("Paste resume text:", value=sample, height=200)
+        if st.button("Parse text", type="primary"):
+            with st.spinner("Analyzing..."):
+                parsed = parse_resume(text, use_llm=has_llm)
+                _store_cv(parsed)
+
+    if "cv_profile" in st.session_state:
+        _render_cv_card(st.session_state["cv_profile"])
+
+
+def _store_cv(parsed: dict):
+    parsed = _enrich_profile(parsed)
+    st.session_state["cv_profile"] = parsed
+    src   = parsed.get("_meta", {}).get("source", "")
+    chars = parsed.get("_meta", {}).get("pdf_chars", 0)
+    msg   = f"Done -- {'LLM' if 'llm' in src else 'Regex'}"
+    if chars:
+        msg += f" -- {chars} chars"
+    st.success(msg)
+
+
+def _render_cv_card(profile: dict):
+    st.divider()
+    st.markdown("### Extracted profile")
+
+    m1, m2, m3 = st.columns(3)
+    with m1: st.metric("Hard Skills", len(profile.get("hard_skills", [])))
+    with m2: st.metric("Soft Skills", len(profile.get("soft_skills", [])))
+    with m3: st.metric("Interests",   len(profile.get("interests",   [])))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**Name:** {profile.get('name', '--')}")
         st.markdown("**Hard Skills:**")
-        st.markdown(tags(profile["hard_skills"]), unsafe_allow_html=True)
+        st.markdown(tags(profile.get("hard_skills", [])), unsafe_allow_html=True)
+    with c2:
         st.markdown("**Soft Skills:**")
-        st.markdown(tags(profile["soft_skills"]), unsafe_allow_html=True)
-        st.markdown("**Интересы:**")
-        st.markdown(tags(profile["interests"]), unsafe_allow_html=True)
-        st.divider()
-        predict_btn = st.button("🚀 Predict", type="primary", use_container_width=True)
-
-    with col_r:
-        if not predict_btn and "results" not in st.session_state:
-            st.info("👈 Настрой профиль и нажми **Predict**")
-            return
-
-        if predict_btn:
-            jobs    = load_jobs(ROOT / "data" / "jobs.csv")
-            results = predict_top_roles(profile, jobs, top_n=top_n)
-            if use_semantic:
-                for r in results:
-                    sem = semantic_match_score(
-                        profile["hard_skills"],
-                        r["missing_skills"] + r["matched_skills"])
-                    r["hybrid_score"] = hybrid_score(r["score"], sem["score"])
-                    r["hybrid_pct"]   = int(r["hybrid_score"] * 100)
-                results.sort(key=lambda x: x.get("hybrid_score", x["score"]), reverse=True)
-            st.session_state["results"] = results
-            st.session_state["profile"] = profile
-
-        results   = st.session_state["results"]
-        score_key = "hybrid_pct" if use_semantic else "score_pct"
-
-        # Charts: bar + radar
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.subheader("📊 Bar Chart")
-            df = pd.DataFrame({
-                "Роль":      [r["role"] for r in results],
-                "Score (%)": [r.get(score_key, r["score_pct"]) for r in results],
-            }).set_index("Роль")
-            st.bar_chart(df, color="#4299e1")
-        with c2:
-            st.subheader("🕸️ Radar")
-            all_jobs    = load_jobs(ROOT / "data" / "jobs.csv")
-            all_results = predict_top_roles(profile, all_jobs, top_n=len(all_jobs))
-            fig = radar_chart(all_results, score_key)
-            if fig:
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-            else:
-                st.caption("Нужно ≥ 3 роли для radar chart")
-
-        if use_semantic:
-            st.caption(f"🧠 TF-IDF {'✅' if SKLEARN_AVAILABLE else '⚠️ fallback: overlap'}")
-
-        # Role cards
-        st.subheader("🏆 Результаты")
-        medals = ["🥇","🥈","🥉","4️⃣","5️⃣"]
-        for i, r in enumerate(results):
-            pct = r.get(score_key, r["score_pct"])
-            with st.expander(f"{medals[i]} **{r['role']}** — {pct}%", expanded=(i==0)):
-                st.progress(pct / 100)
-                st.caption(r["description"])
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**✅ Есть:**")
-                    st.markdown(tags(r["matched_skills"], "skill-match"), unsafe_allow_html=True)
-                with c2:
-                    st.markdown("**❌ Нужно:**")
-                    st.markdown(tags(r["missing_skills"], "skill-missing"), unsafe_allow_html=True)
-
-                if r["missing_skills"]:
-                    st.markdown("---")
-                    st.markdown("**📚 Ресурсы:**")
-                    sel = st.selectbox("Навык:", r["missing_skills"], key=f"res_{i}")
-                    res = find_resources(sel)
-                    src = {"static":"📖","llm":"🤖","template":"🔗"}.get(res["source"],"🔗")
-                    st.caption(f"Источник: {src}")
-                    r1,r2,r3,r4 = st.columns(4)
-                    with r1:
-                        st.markdown("📄 **Docs**")
-                        for u in res.get("docs",[]): st.markdown(f"[Открыть]({u})")
-                    with r2:
-                        st.markdown("🎓 **Курсы**")
-                        for u in res.get("courses",[]): st.markdown(f"[Открыть]({u})")
-                    with r3:
-                        st.markdown("💻 **GitHub**")
-                        for u in res.get("github",[]): st.markdown(f"[Открыть]({u})")
-                    with r4:
-                        st.markdown("🎬 **Видео**")
-                        for u in res.get("video",[]): st.markdown(f"[Открыть]({u})")
-
-        st.divider()
-        st.download_button("📥 Скачать отчёт (Markdown)",
-            data=export_md(profile, results),
-            file_name="career_report.md", mime="text/markdown",
-            use_container_width=True)
-
-
-# ---------------------------------------------------------------------------
-# Tab 2 — Roadmap
-# ---------------------------------------------------------------------------
-def tab_roadmap(profile):
-    st.subheader("🗺️ Персональный Career Roadmap")
-    jobs       = load_jobs(ROOT / "data" / "jobs.csv")
-    role_names = [j["role"] for j in jobs]
-    target     = st.selectbox("Целевая роль:", role_names)
-    results    = predict_top_roles(profile, jobs, top_n=len(jobs))
-    role_data  = next((r for r in results if r["role"] == target), None)
-    if not role_data: return
-
-    c1,c2,c3 = st.columns(3)
-    with c1: st.markdown(f'<div class="metric-box"><b>Match</b><br><h2>{role_data["score_pct"]}%</h2></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-box"><b>Есть</b><br><h2>{len(role_data["matched_skills"])}</h2></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="metric-box"><b>Нужно</b><br><h2>{len(role_data["missing_skills"])}</h2></div>', unsafe_allow_html=True)
+        st.markdown(tags(profile.get("soft_skills", [])), unsafe_allow_html=True)
+        st.markdown("**Interests:**")
+        st.markdown(tags(profile.get("interests",   [])), unsafe_allow_html=True)
 
     st.divider()
-    if st.button("🤖 Сгенерировать Roadmap", type="primary"):
-        with st.spinner("Строю план..."):
+    col_save, col_hint = st.columns(2)
+    with col_save:
+        if st.button("Save as profile.json", use_container_width=True):
+            display = {k: v for k, v in profile.items() if not k.startswith("_")}
+            with open(ROOT / "data" / "profile.json", "w", encoding="utf-8") as f:
+                json.dump(display, f, indent=2, ensure_ascii=False)
+            st.success("Saved!")
+    with col_hint:
+        st.info("Go to CV Roast or Telegram Jobs next")
+
+
+# ---------------------------------------------------------------------------
+# Tab 2 -- CV Roast
+# ---------------------------------------------------------------------------
+
+def tab_cv_roast(profile):
+    st.subheader("CV Roast")
+    st.caption("Honest critique of your profile -- what is blocking your next offer")
+
+    has_llm = bool(os.environ.get("LLM_API_KEY", ""))
+
+    if "cv_profile" in st.session_state:
+        st.markdown('<div class="cv-banner">Analyzing profile from your CV</div>',
+                    unsafe_allow_html=True)
+
+    if not profile.get("hard_skills") and not profile.get("soft_skills"):
+        st.warning("Upload your resume in CV Upload tab or fill the sidebar profile first.")
+        return
+
+    col_h, col_m = st.columns([2, 1])
+    with col_h:
+        harshness = st.slider("Harshness level:", 1, 10, 6,
+                              help="1=gentle, 10=merciless")
+    with col_m:
+        st.caption(f"Mode: {'LLM' if has_llm else 'Rule-based'}")
+        st.write("")
+        run = st.button("Run Roast", type="primary", use_container_width=True)
+
+    if run:
+        with st.spinner("Analyzing..."):
+            result = generate_cv_roast(profile, harshness)
+            st.session_state["roast_result"] = result
+
+    if "roast_result" not in st.session_state:
+        return
+
+    r = st.session_state["roast_result"]
+    score = r.get("roast_score", 5)
+    color = "#68d391" if score >= 7 else "#f6ad55" if score >= 4 else "#fc8181"
+
+    col_v, col_s = st.columns([3, 1])
+    with col_v:
+        st.markdown(f"## {r.get('verdict', '--')}")
+        st.markdown(f"*{r.get('roast_text', '')}*")
+    with col_s:
+        st.metric("CV Score", f"{score}/10")
+
+    st.progress(score / 10)
+    st.caption(f"Source: {'LLM' if r.get('source')=='llm' else 'Rule-based'}")
+    st.divider()
+
+    col_i, col_p = st.columns(2)
+    with col_i:
+        if r.get("issues"):
+            st.markdown(f"### Issues ({len(r['issues'])})")
+            for title, desc in r["issues"]:
+                st.markdown(
+                    f'<div class="roast-issue"><b>{title}</b><br><small>{desc}</small></div>',
+                    unsafe_allow_html=True)
+    with col_p:
+        if r.get("praise"):
+            st.markdown(f"### Strengths ({len(r['praise'])})")
+            for title, desc in r["praise"]:
+                st.markdown(
+                    f'<div class="roast-praise"><b>{title}</b><br><small>{desc}</small></div>',
+                    unsafe_allow_html=True)
+
+    if r.get("tips"):
+        st.divider()
+        st.markdown("### Action steps")
+        for i, tip in enumerate(r["tips"], 1):
+            st.markdown(f"**{i}.** {tip}")
+
+
+# ---------------------------------------------------------------------------
+# Tab 3 -- Telegram Jobs
+# ---------------------------------------------------------------------------
+
+def tab_telegram_jobs(profile):
+    st.subheader("Telegram Job Search")
+    st.caption("IT vacancies from Telegram channels matched to your profile with full infographics")
+
+    if "cv_profile" in st.session_state:
+        cv = st.session_state["cv_profile"]
+        st.markdown(
+            f'<div class="cv-banner">Profile from CV: <b>{cv.get("name","--")}</b> ',
+            unsafe_allow_html=True)
+        n = len(cv.get("hard_skills", []))
+        st.markdown(f'&nbsp;&middot; {n} hard skills</div>', unsafe_allow_html=True)
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env", override=True)
+    except ImportError:
+        pass
+
+    _id    = os.environ.get("TELEGRAM_API_ID",   "").strip()
+    _hash  = os.environ.get("TELEGRAM_API_HASH",  "").strip()
+    _phone = os.environ.get("TELEGRAM_PHONE",     "").strip()
+    _sess  = ROOT / "data" / ".telegram_session.session"
+
+    has_creds   = bool(_id and _hash and _phone)
+    has_session = _sess.exists()
+    has_tg      = has_creds and has_session
+
+    if has_tg:
+        st.success("Telegram authorized -- real search active")
+    elif has_creds:
+        st.warning("Keys found, no session yet --> run: `python telegram_bot/auth.py`")
+    else:
+        st.info("Demo mode (mock data). Configure .env for real search.")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        days_back = st.slider("Search depth (days):", 1, 30, 7)
+    with col2:
+        min_match = st.slider("Min match (%):", 0, 80, 20)
+    with col3:
+        max_cards = st.slider("Cards to show:", 3, 20, 8)
+
+    with st.expander("Channels and settings", expanded=False):
+        with open(ROOT / "data" / "telegram_channels.json", encoding="utf-8") as ff:
+            ch_cfg = json.load(ff)
+        ch_opts = {c["name"]: c["username"] for c in ch_cfg["channels"]}
+        default_ch = [
+            n for n, u in ch_opts.items()
+            if u in ("dev_kg","getmatch","python_jobs_ru","devops_jobs_ru","backend_jobs_ru")
+        ][:5]
+        sel_names = st.multiselect("Channels:", list(ch_opts.keys()),
+                                   default=default_ch or list(ch_opts.keys())[:5])
+        sel_ch = [ch_opts[n] for n in sel_names]
+
+        st.markdown("**Add channel:**")
+        cu_col, btn_col = st.columns([4, 1])
+        with cu_col:
+            custom_u = st.text_input("Username (no @):", key="tg_cu", placeholder="dev_kg")
+        with btn_col:
+            st.write("")
+            if st.button("+", key="tg_add"):
+                if custom_u.strip():
+                    from telegram_bot.job_scraper import add_custom_channel
+                    ok = add_custom_channel(custom_u.strip().lstrip("@"))
+                    if ok:
+                        st.success("Added!")
+                    else:
+                        st.info("Already in list")
+                    st.rerun()
+
+    st.divider()
+
+    if st.button("Find vacancies", type="primary", use_container_width=True):
+        with st.spinner("Searching..."):
+            try:
+                from telegram_bot.job_scraper import scrape_jobs
+                all_found = scrape_jobs(
+                    profile       = profile,
+                    channels      = sel_ch if sel_ch else None,
+                    days_back     = days_back,
+                    min_match_pct = 0,
+                    use_mock      = not has_tg,
+                )
+                st.session_state["tg_jobs"] = all_found
+            except Exception as e:
+                st.error(f"Error: {e}")
+                return
+
+    if "tg_jobs" not in st.session_state:
+        st.info("Click Find vacancies to search")
+        return
+
+    all_jobs = st.session_state["tg_jobs"]
+    jobs     = [j for j in all_jobs if j.match_pct >= min_match]
+
+    if not jobs:
+        st.warning(f"No vacancies with match >= {min_match}%. Lower the threshold.")
+        return
+
+    # KPI
+    st.markdown("## Analytics")
+    avg     = int(sum(j.match_pct for j in jobs) / len(jobs))
+    best    = max(j.match_pct for j in jobs)
+    seniors = sum(1 for j in jobs if j.seniority == "senior")
+    juniors = sum(1 for j in jobs if j.seniority == "junior")
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Found",       len(jobs))
+    k2.metric("Avg match",   f"{avg}%")
+    k3.metric("Best match",  f"{best}%")
+    k4.metric("Senior",      seniors)
+    k5.metric("Junior",      juniors)
+
+    st.markdown("---")
+
+    r1c1, r1c2 = st.columns([3, 1])
+    with r1c1:
+        st.markdown("**Match scores by vacancy**")
+        fig = _fig_match_bars(jobs)
+        st.pyplot(fig, use_container_width=True); plt.close(fig)
+    with r1c2:
+        st.markdown("**Seniority**")
+        fig2 = _fig_seniority_pie(jobs)
+        st.pyplot(fig2, use_container_width=True); plt.close(fig2)
+
+    st.markdown("---")
+
+    r2c1, r2c2 = st.columns([3, 2])
+    with r2c1:
+        st.markdown("**Skills you are missing (across all jobs)**")
+        fig3 = _fig_skills_gap(jobs)
+        if fig3:
+            st.pyplot(fig3, use_container_width=True); plt.close(fig3)
+        else:
+            st.success("You cover all skills in found vacancies!")
+    with r2c2:
+        st.markdown("**Match score distribution**")
+        fig4 = _fig_match_histogram(jobs)
+        st.pyplot(fig4, use_container_width=True); plt.close(fig4)
+
+    fig5 = _fig_channels(jobs)
+    if fig5:
+        st.markdown("---")
+        st.markdown("**Jobs per channel**")
+        st.pyplot(fig5, use_container_width=True); plt.close(fig5)
+
+    st.markdown(f"## Vacancies  ({min(max_cards, len(jobs))} of {len(jobs)})")
+
+    seniority_emoji = {"senior": "R", "middle": "Y", "junior": "G"}
+    for j in jobs[:max_cards]:
+        emoji = {"senior": "🔴", "middle": "🟡", "junior": "🟢"}.get(j.seniority, "🟡")
+        with st.expander(
+            f"{emoji} **{j.role_name}** -- {j.match_pct}% | {j.channel_name} · {j.date.strftime('%d.%m')}",
+            expanded=False,
+        ):
+            st.progress(j.match_pct / 100)
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("**Have:**")
+                st.markdown(tags(j.you_have, "skill-match"), unsafe_allow_html=True)
+            with cb:
+                st.markdown("**Need:**")
+                st.markdown(tags(j.you_need, "skill-missing"), unsafe_allow_html=True)
+
+            with st.expander("Job text"):
+                st.text(j.text[:600] + ("..." if len(j.text) > 600 else ""))
+
+            st.markdown(f"[Open in Telegram]({j.url})")
+
+            if j.you_need:
+                sk = st.selectbox("Resources for skill:", j.you_need, key=f"r_{j.id}")
+                res = find_resources(sk)
+                rr1, rr2, rr3 = st.columns(3)
+                with rr1:
+                    for u in res.get("docs",    []): st.markdown(f"[Docs]({u})")
+                with rr2:
+                    for u in res.get("courses", []): st.markdown(f"[Course]({u})")
+                with rr3:
+                    for u in res.get("github",  []): st.markdown(f"[GitHub]({u})")
+
+
+# ---------------------------------------------------------------------------
+# Tab 4 -- Roadmap
+# ---------------------------------------------------------------------------
+
+def tab_roadmap(profile):
+    st.subheader("Career Roadmap")
+    if "cv_profile" in st.session_state:
+        st.markdown('<div class="cv-banner">Using profile from your CV</div>',
+                    unsafe_allow_html=True)
+
+    jobs       = load_jobs(ROOT / "data" / "jobs.csv")
+    role_names = [j["role"] for j in jobs]
+    target     = st.selectbox("Target role:", role_names)
+    results    = predict_top_roles(profile, jobs, top_n=len(jobs))
+    role_data  = next((r for r in results if r["role"] == target), None)
+    if not role_data:
+        return
+
+    c1, c2, c3 = st.columns(3)
+    with c1: st.metric("Match",  f"{role_data['score_pct']}%")
+    with c2: st.metric("Have",   len(role_data["matched_skills"]))
+    with c3: st.metric("Need",   len(role_data["missing_skills"]))
+
+    st.divider()
+    if st.button("Generate Roadmap", type="primary"):
+        with st.spinner("Building plan..."):
             rm = generate_roadmap(
                 profile=profile, target_role=target,
                 missing_skills=role_data["missing_skills"],
@@ -293,570 +824,209 @@ def tab_roadmap(profile):
             )
             st.session_state["roadmap"] = rm
 
-    if "roadmap" not in st.session_state: return
-    rm  = st.session_state["roadmap"]
-    src = "🤖 LLM" if rm.get("source")=="llm" else "📋 Template"
-    st.caption(f"Источник: {src}")
-
-    lvl = {"high":"🟢","medium":"🟡","low":"🔴"}.get(rm.get("readiness_level","medium"),"🟡")
-    st.info(f"{lvl} {rm.get('readiness','')}")
-
-    if rm.get("total_months",0) > 0:
-        st.markdown(f"**⏱ Время:** {rm['total_months']} мес. ({rm['total_weeks']} нед.)")
+    if "roadmap" not in st.session_state:
+        return
+    rm = st.session_state["roadmap"]
+    st.caption(f"Source: {'LLM' if rm.get('source')=='llm' else 'Template'}")
+    lvl = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(rm.get("readiness_level", "medium"), "🟡")
+    st.info(f"{lvl} {rm.get('readiness', '')}")
+    if rm.get("total_months", 0) > 0:
+        st.markdown(f"**Time:** {rm['total_months']} months ({rm['total_weeks']} weeks)")
     if rm.get("quick_wins"):
-        st.markdown("**⚡ Быстрые победы:**")
+        st.markdown("**Quick wins:**")
         st.markdown(tags(rm["quick_wins"]), unsafe_allow_html=True)
     if rm.get("phases"):
-        st.markdown("### 📅 Фазы")
+        st.markdown("### Phases")
         for p in rm["phases"]:
             desc = f'<br><small>{p.get("description","")}</small>' if p.get("description") else ""
             st.markdown(
-                f'<div class="phase-card"><b>{p["title"]}</b> · {p["weeks"]} нед.'
-                f'<br>{tags(p["skills"])}{desc}</div>',
+                f'<div class="phase-card"><b>{p["title"]}</b> &middot; {p["weeks"]} weeks',
                 unsafe_allow_html=True)
+            st.markdown(tags(p["skills"]), unsafe_allow_html=True)
+            if desc:
+                st.markdown(desc, unsafe_allow_html=True)
     if rm.get("tips"):
-        st.markdown("### 💡 Советы")
-        for t in rm["tips"]: st.markdown(f"- {t}")
+        st.markdown("### Tips")
+        for t in rm["tips"]:
+            st.markdown(f"- {t}")
     if rm.get("strengths"):
-        st.markdown("### 💪 Сильные стороны")
+        st.markdown("### Strengths")
         st.markdown(tags(rm["strengths"], "skill-match"), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab 3 — Interview Coach
+# Tab 5 -- Interview Coach
 # ---------------------------------------------------------------------------
-def tab_interview(profile):
-    st.subheader("🎤 Interview Coach")
-    st.caption("Подготовься к собеседованию — получи вопросы по твоим пробелам")
 
-    jobs      = load_jobs(ROOT / "data" / "jobs.csv")
+def tab_interview(profile):
+    st.subheader("Interview Coach")
+    st.caption("Questions focused on your skill gaps to prepare for interviews")
+    if "cv_profile" in st.session_state:
+        st.markdown('<div class="cv-banner">Using profile from your CV</div>',
+                    unsafe_allow_html=True)
+
+    jobs       = load_jobs(ROOT / "data" / "jobs.csv")
     role_names = [j["role"] for j in jobs]
-    target    = st.selectbox("Целевая роль:", role_names, key="interview_role")
-    results   = predict_top_roles(profile, jobs, top_n=len(jobs))
-    role_data = next((r for r in results if r["role"] == target), None)
-    if not role_data: return
+    target     = st.selectbox("Target role:", role_names, key="interview_role")
+    results    = predict_top_roles(profile, jobs, top_n=len(jobs))
+    role_data  = next((r for r in results if r["role"] == target), None)
+    if not role_data:
+        return
 
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("**❌ Пробелы (вопросы по ним):**")
+        st.markdown("**Gaps (questions on these):**")
         st.markdown(tags(role_data["missing_skills"], "skill-missing"), unsafe_allow_html=True)
     with col2:
-        st.markdown("**✅ Сильные стороны:**")
+        st.markdown("**Strengths:**")
         st.markdown(tags(role_data["matched_skills"], "skill-match"), unsafe_allow_html=True)
 
-    n_per = st.slider("Вопросов на навык:", 1, 4, 2)
+    n_per = st.slider("Questions per skill:", 1, 4, 2)
     st.divider()
 
-    if st.button("🎯 Сгенерировать вопросы", type="primary"):
-        with st.spinner("Подбираю вопросы..."):
+    if st.button("Generate questions", type="primary"):
+        with st.spinner("Generating..."):
             qs = generate_interview_questions(
-                target_role    = target,
-                missing_skills = role_data["missing_skills"],
-                matched_skills = role_data["matched_skills"],
-                n_per_skill    = n_per,
+                target_role=target,
+                missing_skills=role_data["missing_skills"],
+                matched_skills=role_data["matched_skills"],
+                n_per_skill=n_per,
             )
             st.session_state["interview_qs"] = qs
 
-    if "interview_qs" not in st.session_state: return
-    qs  = st.session_state["interview_qs"]
-    src = "🤖 LLM" if qs.get("source")=="llm" else "📖 Static bank"
-    st.caption(f"Источник: {src}")
+    if "interview_qs" not in st.session_state:
+        return
+    qs = st.session_state["interview_qs"]
+    st.caption(f"Source: {'LLM' if qs.get('source')=='llm' else 'Static bank'}")
 
     if qs.get("missing"):
-        st.markdown("### ⚠️ Вопросы по пробелам")
-        st.caption("Именно эти темы интервьюер скорее всего проверит у тебя")
+        st.markdown("### Gap questions")
         for q in qs["missing"]:
             st.markdown(
-                f'<div class="q-card"><b>[{q["skill"]}]</b> {q["question"]}<br>'
-                f'<small>💡 {q["hint"]}</small></div>',
+                f'<div class="q-card"><b>[{q["skill"]}]</b> {q["question"]}',
                 unsafe_allow_html=True)
+            st.markdown(f'<div class="q-card"><small>Hint: {q["hint"]}</small></div>',
+                        unsafe_allow_html=True)
 
     if qs.get("strengths"):
-        st.markdown("### 💪 Вопросы по сильным сторонам")
-        st.caption("Покажи глубину — не ограничивайся базовыми ответами")
+        st.markdown("### Strength questions")
         for q in qs["strengths"]:
             st.markdown(
-                f'<div class="q-card" style="border-color:#68d391"><b>[{q["skill"]}]</b> {q["question"]}<br>'
-                f'<small>💡 {q["hint"]}</small></div>',
+                f'<div class="q-card" style="border-color:#68d391"><b>[{q["skill"]}]</b> {q["question"]}',
                 unsafe_allow_html=True)
+            st.markdown(f'<div class="q-card" style="border-color:#68d391"><small>Hint: {q["hint"]}</small></div>',
+                        unsafe_allow_html=True)
 
     if qs.get("behavioral"):
-        st.markdown("### 🧠 Поведенческие вопросы (STAR)")
+        st.markdown("### Behavioral questions (STAR)")
         for q in qs["behavioral"]:
-            hint = q.get("hint", "")
+            hint_html = f"<br><small>Hint: {q['hint']}</small>" if q.get("hint") else ""
             st.markdown(
-                f'<div class="q-card" style="border-color:#f6ad55">{q["question"]}<br>'
-                + (f'<small>💡 {hint}</small>' if hint else "") + "</div>",
+                f'<div class="q-card" style="border-color:#f6ad55">{q["question"]}{hint_html}</div>',
                 unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab 4 — Job Match
+# Tab 6 -- About
 # ---------------------------------------------------------------------------
-def tab_job_match(profile):
-    st.subheader("💼 Job Description Matcher")
-    st.caption("Вставь текст вакансии — получи анализ соответствия твоему профилю")
 
-    has_llm = bool(os.environ.get("LLM_API_KEY",""))
-    mode    = "🤖 LLM" if has_llm else "📖 Regex"
-    st.caption(f"Режим парсинга: {mode}")
-
-    sample_jd = """Senior Backend Engineer — Fintech Startup
-
-We're looking for a Backend Engineer to build our payment platform.
-
-Required:
-- Python (3+ years), PostgreSQL, Redis
-- Docker, Kubernetes
-- REST API, Microservices
-- Git, CI/CD
-
-Nice to have:
-- AWS
-- System Design experience
-- Kafka"""
-
-    jd_text = st.text_area("Текст вакансии:", value=sample_jd, height=220)
-
-    if st.button("🔍 Проанализировать", type="primary"):
-        with st.spinner("Парсю вакансию..."):
-            parsed = parse_job_description(jd_text, use_llm=has_llm)
-            gap    = gap_analysis(parsed, profile)
-            st.session_state["job_parsed"] = parsed
-            st.session_state["job_gap"]    = gap
-
-    if "job_parsed" not in st.session_state: return
-    parsed = st.session_state["job_parsed"]
-    gap    = st.session_state["job_gap"]
-
-    # Заголовок
-    seniority_emoji = {"senior":"🔴","middle":"🟡","junior":"🟢"}.get(parsed.get("seniority","middle"),"🟡")
-    st.markdown(f"### {seniority_emoji} {parsed.get('role_name','Роль')} · {parsed.get('seniority','').capitalize()}")
-
-    src = parsed.get("_meta",{}).get("source","")
-    st.caption(f"Парсер: {'🤖 LLM' if 'llm' in src else '📖 Regex'}")
-
-    # Fit level
-    fit_labels = {"strong":"🟢 Strong fit","good":"🟡 Good fit",
-                  "partial":"🟠 Partial fit","weak":"🔴 Weak fit"}
-    fit_colors = {"strong":"fit-strong","good":"fit-good","partial":"fit-partial","weak":"fit-weak"}
-    fit = gap["fit_level"]
-    st.markdown(
-        f'<h3 class="{fit_colors[fit]}">{fit_labels[fit]} — {gap["match_pct"]}%</h3>',
-        unsafe_allow_html=True)
-    st.progress(gap["match_pct"] / 100)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**✅ У тебя уже есть:**")
-        st.markdown(tags(gap["you_have"], "skill-match"), unsafe_allow_html=True)
-        if parsed.get("nice_to_have"):
-            st.markdown("**⭐ Nice to have в вакансии:**")
-            st.markdown(tags(parsed["nice_to_have"]), unsafe_allow_html=True)
-    with col2:
-        st.markdown("**❌ Нужно получить:**")
-        st.markdown(tags(gap["you_need"], "skill-missing"), unsafe_allow_html=True)
-        if gap.get("nice_missing"):
-            st.markdown("**💡 Nice to have (нет у тебя):**")
-            st.markdown(tags(gap["nice_missing"], "skill-missing"), unsafe_allow_html=True)
-
-    if parsed.get("responsibilities"):
-        st.markdown("**📋 Обязанности:**")
-        for r in parsed["responsibilities"]:
-            st.markdown(f"- {r}")
-
-    if gap["you_need"]:
-        st.divider()
-        st.markdown("**📚 Ресурсы по нужным навыкам:**")
-        sel = st.selectbox("Навык:", gap["you_need"], key="job_skill_res")
-        res = find_resources(sel)
-        c1,c2,c3,c4 = st.columns(4)
-        with c1:
-            st.markdown("📄 **Docs**")
-            for u in res.get("docs",[]): st.markdown(f"[Открыть]({u})")
-        with c2:
-            st.markdown("🎓 **Курсы**")
-            for u in res.get("courses",[]): st.markdown(f"[Открыть]({u})")
-        with c3:
-            st.markdown("💻 **GitHub**")
-            for u in res.get("github",[]): st.markdown(f"[Открыть]({u})")
-        with c4:
-            st.markdown("🎬 **Видео**")
-            for u in res.get("video",[]): st.markdown(f"[Открыть]({u})")
-
-
-# ---------------------------------------------------------------------------
-# Tab 5 — Resume Parser
-# ---------------------------------------------------------------------------
-def tab_resume():
-    st.subheader("📄 Resume Parser")
-    st.caption("Вставь текст резюме — система извлечёт навыки автоматически")
-
-    has_llm = bool(os.environ.get("LLM_API_KEY",""))
-    if has_llm: st.success("🤖 LLM-режим активен")
-    else:       st.info("📖 Regex fallback (добавь LLM_API_KEY для AI-парсинга)")
-
-    sample = """John Doe — Backend Developer
-Skills: Python, FastAPI, PostgreSQL, Docker, Git, Redis, AWS, Linux, Bash
-Soft skills: problem solving, teamwork, communication
-Interests: backend, cloud, automation, AI"""
-
-    text = st.text_area("Текст резюме:", value=sample, height=180)
-
-    if st.button("🔍 Разобрать резюме", type="primary"):
-        with st.spinner("Анализирую..."):
-            parsed = parse_resume(text, use_llm=has_llm)
-
-        src = parsed.get("_meta",{}).get("source","")
-        st.success(f"✅ Готово · {'🤖 LLM' if 'llm' in src else '📖 Regex'}")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"**Имя:** {parsed.get('name','—')}")
-            st.markdown("**Hard Skills:**")
-            st.markdown(tags(parsed.get("hard_skills",[])), unsafe_allow_html=True)
-        with c2:
-            st.markdown("**Soft Skills:**")
-            st.markdown(tags(parsed.get("soft_skills",[])), unsafe_allow_html=True)
-            st.markdown("**Интересы:**")
-            st.markdown(tags(parsed.get("interests",[])), unsafe_allow_html=True)
-
-        st.divider()
-        display = {k:v for k,v in parsed.items() if not k.startswith("_")}
-        st.code(json.dumps(display, indent=2, ensure_ascii=False), language="json")
-
-        if st.button("💾 Сохранить как profile.json"):
-            with open(ROOT / "data" / "profile.json", "w", encoding="utf-8") as f:
-                json.dump(display, f, indent=2, ensure_ascii=False)
-            st.success("Сохранено! Перезагрузи страницу.")
-
-
-# ---------------------------------------------------------------------------
-# Tab 6 — About
-# ---------------------------------------------------------------------------
 def tab_about():
-    st.subheader("🏗️ Архитектура")
-    st.markdown("""
-```
- Input: profile.json / resume text / job description
-           │
-           ▼
- ┌─────────────────────────────────────────────────┐
- │  Platform Layer                                 │
- │  profile.json · jobs.csv                        │
- │  resume_parser.py  ◄── LLM / Regex              │
- │  job_parser.py     ◄── LLM / Regex              │
- └──────────────────┬──────────────────────────────┘
-                    ▼
- ┌─────────────────────────────────────────────────┐
- │  Model Layer                                    │
- │  predictor.py        ── overlap + алиасы        │
- │  semantic_matcher.py ── TF-IDF cosine           │
- └──────────────────┬──────────────────────────────┘
-                    ▼
- ┌─────────────────────────────────────────────────┐
- │  Agent Layer (GenAI)                            │
- │  resource_finder.py ── курсы / docs / GitHub    │
- │  career_coach.py    ── roadmap генератор        │
- │  interview_coach.py ── вопросы для интервью     │
- └──────────────────┬──────────────────────────────┘
-                    ▼
- ┌─────────────────────────────────────────────────┐
- │  Application Layer — Streamlit (6 вкладок)      │
- │  Predict · Roadmap · Interview · Job · Resume   │
- └─────────────────────────────────────────────────┘
-```
-""")
+    st.subheader("System Architecture")
+    st.code("""
+ PDF / Text CV         Telegram channels        Manual profile
+      |                       |                       |
+      v                       v                       v
+ +------------------------------------------------------------+
+ | Platform Layer                                             |
+ | pdf_parser  resume_parser  job_scraper (Telethon)          |
+ +------------------------+-----------------------------------+
+                          v
+ +------------------------------------------------------------+
+ | Model Layer                                                |
+ | predictor.py (overlap)   semantic_matcher (TF-IDF)         |
+ +------------------------+-----------------------------------+
+                          v
+ +------------------------------------------------------------+
+ | Agent Layer  (LLM + fallback)                              |
+ | career_coach  interview_coach  resource_finder             |
+ | cv_roaster (rule-based + LLM)                              |
+ +------------------------+-----------------------------------+
+                          v
+ +------------------------------------------------------------+
+ | Application Layer -- Streamlit 6 tabs                      |
+ | CV Upload -> CV Roast -> Telegram Jobs                     |
+ |          -> Roadmap   -> Interview                         |
+ +------------------------------------------------------------+
+""", language="text")
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("""
-**🤖 GenAI компоненты:**
-- `resume_parser` — LLM извлекает навыки из резюме
-- `job_parser` — LLM парсит вакансию
-- `career_coach` — LLM генерирует roadmap
-- `interview_coach` — LLM создаёт вопросы интервью
-- `resource_finder` — LLM подбирает ресурсы
-- `semantic_matcher` — TF-IDF cosine similarity
+**GenAI / ML:**
+- `pdf_parser` - pdfplumber + LLM
+- `resume_parser` - LLM / regex (150+ skills)
+- `career_coach` - LLM roadmap
+- `interview_coach` - LLM questions
+- `cv_roaster` - LLM + rule-based critique
+- `resource_finder` - LLM + static dict
+- `semantic_matcher` - TF-IDF cosine
+- `job_scraper` - Telethon parser
 """)
     with col2:
         st.markdown("""
-**🔌 Fallback (без API-ключа):**
-- Resume Parser → словарь 60+ навыков
-- Job Parser → regex + паттерны секций
-- Career Coach → шаблон с приоритетами
-- Interview Coach → банк 100+ вопросов
-- Resource Finder → статический словарь
-- Semantic → exact overlap score
+**Fallback (no API key):**
+- Resume -> 150+ skill dictionary
+- Roadmap -> phase template
+- Interview -> 100+ question bank
+- CV Roast -> market demand rules
+- Resources -> static dict
+- Telegram -> 11 mock vacancies
+
+**Stack:** Python 3.11 - Streamlit - Pandas
+Matplotlib - scikit-learn - Telethon - Docker
 """)
     st.divider()
     st.markdown("""
-**⚙️ Стек:** Python 3.10 · Streamlit · Pandas · Matplotlib · scikit-learn · Claude/GPT
-
-**🚀 Запуск:**
+**Quick start:**
 ```bash
 pip install -r requirements.txt
 streamlit run app/app.py
 ```
+**Docker:**
+```bash
+docker compose up --build
+```
 """)
-
-
-
-# ---------------------------------------------------------------------------
-# Tab — PDF Upload
-# ---------------------------------------------------------------------------
-def tab_pdf_upload():
-    st.subheader("📎 Загрузить резюме (PDF)")
-    st.caption("Загрузи PDF — система автоматически извлечёт навыки и обновит профиль")
-
-    from utils.pdf_parser import get_available_backend
-    backend = get_available_backend()
-    if "не установлена" in backend:
-        st.warning(
-            "⚠️ PDF-библиотека не установлена.\n\n"
-            "```bash\npip install pdfplumber\n```"
-        )
-    else:
-        st.success(f"✅ PDF backend: `{backend}`")
-
-    uploaded = st.file_uploader("Выбери PDF-файл резюме:", type=["pdf"])
-
-    if uploaded is not None:
-        st.info(f"📄 Файл: `{uploaded.name}` ({uploaded.size // 1024} KB)")
-
-        has_llm = bool(os.environ.get("LLM_API_KEY",""))
-        if st.button("🔍 Разобрать PDF", type="primary"):
-            with st.spinner("Читаю PDF и извлекаю навыки..."):
-                try:
-                    from utils.pdf_parser import parse_pdf_resume
-                    pdf_bytes = uploaded.read()
-                    profile   = parse_pdf_resume(pdf_bytes, use_llm=has_llm)
-
-                    src = profile.get("_meta",{}).get("source","")
-                    chars = profile.get("_meta",{}).get("pdf_chars", 0)
-                    st.success(f"✅ Извлечено {chars} символов · {'🤖 LLM' if 'llm' in src else '📖 Regex'}")
-
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown(f"**Имя:** {profile.get('name','—')}")
-                        st.markdown("**Hard Skills:**")
-                        st.markdown(tags(profile.get("hard_skills",[])), unsafe_allow_html=True)
-                    with c2:
-                        st.markdown("**Soft Skills:**")
-                        st.markdown(tags(profile.get("soft_skills",[])), unsafe_allow_html=True)
-                        st.markdown("**Интересы:**")
-                        st.markdown(tags(profile.get("interests",[])), unsafe_allow_html=True)
-
-                    st.divider()
-                    display = {k:v for k,v in profile.items() if not k.startswith("_")}
-                    st.code(json.dumps(display, indent=2, ensure_ascii=False), language="json")
-
-                    if st.button("💾 Сохранить как profile.json"):
-                        with open(ROOT / "data" / "profile.json", "w", encoding="utf-8") as ff:
-                            json.dump(display, ff, indent=2, ensure_ascii=False)
-                        st.success("Сохранено! Перезагрузи страницу для применения.")
-
-                except RuntimeError as e:
-                    st.error(str(e))
-                    st.code("pip install pdfplumber", language="bash")
-                except Exception as e:
-                    st.error(f"Ошибка: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Tab — Telegram Jobs
-# ---------------------------------------------------------------------------
-def tab_telegram_jobs(profile):
-    st.subheader("📡 Telegram Job Search")
-    st.caption("Поиск вакансий по IT-каналам Telegram с матчингом по твоему профилю")
-
-    # Статус подключения — перечитываем .env каждый раз при рендере вкладки
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env", override=True)
-    except ImportError:
-        pass
-
-    _tg_id    = os.environ.get("TELEGRAM_API_ID", "").strip()
-    _tg_hash  = os.environ.get("TELEGRAM_API_HASH", "").strip()
-    _tg_phone = os.environ.get("TELEGRAM_PHONE", "").strip()
-    _session  = ROOT / "data" / ".telegram_session.session"
-
-    has_creds   = bool(_tg_id and _tg_hash and _tg_phone)
-    has_session = _session.exists()
-    has_tg      = has_creds and has_session   # готов к реальному поиску
-
-    if has_tg:
-        st.success("✅ Telegram API настроен и авторизован — используется реальный поиск")
-    elif has_creds and not has_session:
-        st.warning(
-            "⚠️ Ключи найдены в .env, но сессия не создана. "
-            "Запусти один раз из терминала:\n\n"
-            "```\npython telegram_bot/auth.py\n```\n"
-            "После ввода SMS-кода сессия сохранится и здесь появится реальный поиск."
-        )
-    else:
-        st.info(
-            "📋 Telegram API не настроен → показываются демо-данные (mock).\n\n"
-            "Заполни в `.env`:\n"
-            "```\nTELEGRAM_API_ID=...\nTELEGRAM_API_HASH=...\nTELEGRAM_PHONE=+7...\n```\n"
-            "Ключи получить на https://my.telegram.org/apps"
-        )
-
-    # Настройки поиска
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        days_back   = st.slider("Глубина поиска (дней):", 1, 30, 7)
-    with col2:
-        min_match   = st.slider("Мин. совпадение (%):", 0, 80, 25)
-    with col3:
-        max_results = st.slider("Макс. результатов:", 3, 20, 8)
-
-    # ── Добавить кастомный канал ──────────────────────────────────────────────
-    with st.expander("➕ Добавить свой канал", expanded=False):
-        col_a, col_b, col_c = st.columns([2, 2, 1])
-        with col_a:
-            custom_username = st.text_input(
-                "Username канала:", placeholder="dev_kg  (без @)",
-                key="custom_ch_input"
-            )
-        with col_b:
-            custom_name = st.text_input(
-                "Название (опц.):", placeholder="Dev KG",
-                key="custom_ch_name"
-            )
-        with col_c:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Добавить", key="add_ch_btn"):
-                if custom_username.strip():
-                    from telegram_bot.job_scraper import add_custom_channel
-                    added = add_custom_channel(
-                        custom_username.strip().lstrip("@"),
-                        name=custom_name.strip() or custom_username.strip()
-                    )
-                    if added:
-                        st.success(f"✅ Канал @{custom_username.strip().lstrip('@')} добавлен!")
-                        st.rerun()
-                    else:
-                        st.info("Канал уже есть в списке")
-                else:
-                    st.warning("Введи username канала")
-
-    # ── Фильтр каналов ────────────────────────────────────────────────────────
-    with open(ROOT / "data" / "telegram_channels.json", encoding="utf-8") as ff:
-        ch_config = json.load(ff)
-    all_channels  = ch_config["channels"]
-    ch_options    = {c["name"]: c["username"] for c in all_channels}
-
-    # dev_kg выбран по умолчанию если есть
-    default_channels = [
-        n for n, u in ch_options.items()
-        if u in ("dev_kg", "getmatch", "python_jobs_ru", "devops_jobs_ru", "backend_jobs_ru")
-    ][:5]
-
-    selected_names = st.multiselect(
-        "Каналы для поиска:",
-        options=list(ch_options.keys()),
-        default=default_channels or list(ch_options.keys())[:5],
-    )
-    selected_ch = [ch_options[n] for n in selected_names]
-
-    st.divider()
-    if st.button("🔍 Найти вакансии", type="primary"):
-        with st.spinner("Ищу вакансии..."):
-            try:
-                from telegram_bot.job_scraper import scrape_jobs
-                jobs = scrape_jobs(
-                    profile       = profile,
-                    channels      = selected_ch if selected_ch else None,
-                    days_back     = days_back,
-                    min_match_pct = min_match,
-                    use_mock      = not has_tg,
-                )
-                st.session_state["tg_jobs"] = jobs
-            except Exception as e:
-                st.error(f"Ошибка: {e}")
-                return
-
-    if "tg_jobs" not in st.session_state:
-        return
-
-    jobs = st.session_state["tg_jobs"]
-
-    if not jobs:
-        st.warning("Вакансий не найдено. Снизь порог совпадения или расширь каналы.")
-        return
-
-    st.markdown(f"**Найдено: {len(jobs)} вакансий** (показаны топ-{min(max_results, len(jobs))})")
-
-    seniority_emoji = {"senior":"🔴","middle":"🟡","junior":"🟢"}
-    fit_color = {
-        range(80, 101): "skill-match",
-        range(50, 80):  "skill-tag",
-        range(0, 50):   "skill-missing",
-    }
-
-    def score_cls(pct):
-        if pct >= 80: return "skill-match"
-        if pct >= 50: return "skill-tag"
-        return "skill-missing"
-
-    for j in jobs[:max_results]:
-        emoji = seniority_emoji.get(j.seniority, "🟡")
-        with st.expander(
-            f"{emoji} **{j.role_name}** — {j.match_pct}% | {j.channel_name} · {j.date.strftime('%d.%m')}",
-            expanded=False,
-        ):
-            st.progress(j.match_pct / 100)
-
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**✅ У тебя есть:**")
-                st.markdown(tags(j.you_have, "skill-match"), unsafe_allow_html=True)
-            with c2:
-                st.markdown("**❌ Нужно получить:**")
-                st.markdown(tags(j.you_need, "skill-missing"), unsafe_allow_html=True)
-
-            st.markdown(f"**Текст вакансии:**")
-            preview = j.text[:600] + ("..." if len(j.text) > 600 else "")
-            st.text(preview)
-            st.markdown(f"[🔗 Открыть в Telegram]({j.url})")
-
-            # Быстрые ресурсы по нужным навыкам
-            if j.you_need:
-                skill_res = st.selectbox(
-                    "Ресурсы для изучения:", j.you_need, key=f"tg_res_{j.id}"
-                )
-                res = find_resources(skill_res)
-                r1,r2,r3 = st.columns(3)
-                with r1:
-                    for u in res.get("docs",[]): st.markdown(f"📄 [Docs]({u})")
-                with r2:
-                    for u in res.get("courses",[]): st.markdown(f"🎓 [Course]({u})")
-                with r3:
-                    for u in res.get("github",[]): st.markdown(f"💻 [GitHub]({u})")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 def main():
-    st.title("🎯 Digital Twin Career Engine")
-    st.caption("Анализ навыков · GenAI Roadmap · Interview Prep · Telegram Jobs · PDF Parser")
+    st.title("Digital Twin Career Engine")
+    st.caption("PDF CV -> Skills -> Telegram Jobs -> CV Roast -> Roadmap -> Interview")
 
-    profile, top_n, use_sem = sidebar_profile()
+    sidebar_p = sidebar_profile()
+    profile   = get_active_profile(sidebar_p)
+    profile   = _enrich_profile(profile)
 
-    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
-        "🎯 Predict", "🗺️ Roadmap", "🎤 Interview",
-        "💼 Job Match", "📡 Telegram Jobs", "📎 PDF Upload",
-        "📄 Resume", "ℹ️ About"
+    t1, t2, t3, t4, t5, t6 = st.tabs([
+        "CV Upload",
+        "CV Roast",
+        "Telegram Jobs",
+        "Roadmap",
+        "Interview",
+        "About",
     ])
-    with t1: tab_predict(profile, top_n, use_sem)
-    with t2: tab_roadmap(profile)
-    with t3: tab_interview(profile)
-    with t4: tab_job_match(profile)
-    with t5: tab_telegram_jobs(profile)
-    with t6: tab_pdf_upload()
-    with t7: tab_resume()
-    with t8: tab_about()
+
+    with t1: tab_cv_upload()
+    with t2: tab_cv_roast(profile)
+    with t3: tab_telegram_jobs(profile)
+    with t4: tab_roadmap(profile)
+    with t5: tab_interview(profile)
+    with t6: tab_about()
+
 
 if __name__ == "__main__":
     main()

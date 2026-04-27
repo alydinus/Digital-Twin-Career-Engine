@@ -1,29 +1,25 @@
 {
-  "_comment": "Шаблон профиля пользователя. Замените значения своими данными или подключите парсер резюме.",
-  "name": "Alydin",
+  "name": "Алыкулов Алыдин Болотбекович",
   "hard_skills": [
-    "Python",
+    "Java",
+    "Go",
     "SQL",
+    "PostgreSQL",
+    "MySQL",
     "Docker",
-    "Git",
     "Linux",
-    "Bash"
+    "Git",
+    "CI/CD",
+    "Spring",
+    "REST API",
+    "RabbitMQ",
+    "Jira"
   ],
-  "soft_skills": [
-    "problem solving",
-    "teamwork",
-    "communication",
-    "critical thinking"
-  ],
+  "soft_skills": [],
   "interests": [
     "backend",
     "data",
     "AI",
-    "automation"
-  ],
-  "_meta": {
-    "source": "template",
-    "version": "1.0",
-    "note": "Future: будет заменён парсером резюме (PDF/LinkedIn)"
-  }
+    "security"
+  ]
 }
