@@ -40,6 +40,12 @@ from agent.resource_finder  import find_resources
 from agent.career_coach     import generate_roadmap
 from agent.interview_coach  import generate_interview_questions
 from utils.resume_parser    import parse_resume
+from app.dashboard          import (
+    fig_balance_wheel,
+    fig_tech_tree,
+    fig_semester_wrapped,
+    fig_to_png_bytes,
+)
 
 # ---------------------------------------------------------------------------
 # Page config & CSS
@@ -69,6 +75,25 @@ st.markdown("""
                background:rgba(159,122,234,0.10); border-radius:0 8px 8px 0; }
 .cv-banner   { border-left:4px solid #4299e1; border-radius:0 8px 8px 0;
                background:rgba(66,153,225,0.10); padding:10px 16px; margin:8px 0; }
+
+/* ── Metric boxes: transparent, theme-aware ── */
+[data-testid="metric-container"] {
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    border-radius: 10px !important;
+    padding: 14px 18px !important;
+}
+[data-testid="metric-container"] label {
+    color: rgba(180,200,220,0.85) !important;
+    font-size: 0.82em !important;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+[data-testid="stMetricValue"] {
+    color: inherit !important;
+    font-size: 1.9em !important;
+    font-weight: 700 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -120,64 +145,64 @@ def _roast_rules(profile: dict, harshness: int) -> dict:
     issues, praise, tips = [], [], []
 
     if not name or name in ("--", "User", ""):
-        issues.append(("No name", "Anonymous resumes get rejected first. Add your full name."))
+        issues.append(("Нет имени", "Анонимные резюме отклоняют первыми. Укажи полное имя."))
 
     n_hard = len(hard_orig)
     if n_hard == 0:
-        issues.append(("Zero hard skills", "No skills = no resume. Add everything you have worked with."))
+        issues.append(("Ноль hard skills", "Нет навыков = нет резюме. Добавь всё, с чем работал."))
     elif n_hard < 5:
-        issues.append(("Too few skills",
-                        f"Only {n_hard} hard skill(s). Recruiters expect 6-8 minimum. "
-                        "Add frameworks, tools, versions -- everything you have used."))
+        issues.append(("Слишком мало навыков",
+                        f"Только {n_hard} hard skill(ов). Рекрутеры ждут минимум 6-8. "
+                        "Добавь фреймворки, инструменты, версии — всё, что использовал."))
     elif n_hard >= 15:
-        praise.append(("Wide tech stack", f"{n_hard} hard skills -- excellent coverage."))
+        praise.append(("Широкий стек", f"{n_hard} hard skills — отличное покрытие."))
     else:
-        praise.append(("Decent stack", f"{n_hard} hard skills -- solid starting point."))
+        praise.append(("Нормальный стек", f"{n_hard} hard skills — хорошая отправная точка."))
 
     langs = {"python","java","go","golang","javascript","typescript",
              "rust","c++","c#","kotlin","swift","scala","php","ruby"}
     found_langs = [s for s in hard if s in langs]
     if not found_langs:
-        issues.append(("No programming language",
-                        "Recruiter checks language first. State your main language explicitly."))
+        issues.append(("Нет языка программирования",
+                        "Рекрутер смотрит на язык первым делом. Укажи основной язык явно."))
     elif len(found_langs) == 1:
-        praise.append(("Primary language", f"Listed {found_langs[0].title()} -- good."))
+        praise.append(("Основной язык", f"Указан {found_langs[0].title()} — хорошо."))
     else:
-        praise.append(("Multi-language", f"{', '.join(s.title() for s in found_langs[:3])}."))
+        praise.append(("Несколько языков", f"{', '.join(s.title() for s in found_langs[:3])}."))
 
     dbs = {"postgresql","mysql","mongodb","redis","sqlite","sql",
            "cassandra","elasticsearch","clickhouse","dynamodb"}
     found_dbs = [s for s in hard if s in dbs]
     if not found_dbs:
-        issues.append(("No databases",
-                        "Almost every job requires SQL or NoSQL. Add at least PostgreSQL or MongoDB."))
-        tips.append("Learn PostgreSQL: https://www.postgresqltutorial.com/")
+        issues.append(("Нет баз данных",
+                        "Почти каждая вакансия требует SQL или NoSQL. Добавь хотя бы PostgreSQL или MongoDB."))
+        tips.append("Учи PostgreSQL: https://www.postgresqltutorial.com/")
     else:
-        praise.append(("DB in stack", f"{', '.join(s.upper() for s in found_dbs[:3])}."))
+        praise.append(("БД в стеке", f"{', '.join(s.upper() for s in found_dbs[:3])}."))
 
     devops = {"docker","kubernetes","k8s","terraform","ansible","helm"}
     found_devops = [s for s in hard if s in devops]
     if not found_devops:
-        issues.append(("No containerization",
-                        "Docker is a baseline skill for any backend/devops role in 2024. "
-                        "You are missing 70%+ of job listings."))
+        issues.append(("Нет контейнеризации",
+                        "Docker — базовый навык для backend/devops в 2024. "
+                        "Без него выпадаешь из 70%+ вакансий."))
         tips.append("Docker quickstart: https://docs.docker.com/get-started/")
     else:
-        praise.append(("Containers", f"Has {', '.join(s.title() for s in found_devops[:3])}."))
+        praise.append(("Контейнеры", f"Есть {', '.join(s.title() for s in found_devops[:3])}."))
 
     clouds = {"aws","gcp","azure","digitalocean","cloudflare"}
     found_cloud = [s for s in hard if s in clouds]
     if not found_cloud:
-        issues.append(("No cloud platform",
-                        "AWS/GCP/Azure appears in 60%+ of listings. Even basic AWS is a big plus."))
+        issues.append(("Нет облачных платформ",
+                        "AWS/GCP/Azure встречается в 60%+ вакансий. Даже базовый AWS — большой плюс."))
         tips.append("AWS Free Tier: https://aws.amazon.com/free/")
     else:
-        praise.append(("Cloud", f"{', '.join(s.upper() for s in found_cloud)}."))
+        praise.append(("Облако", f"{', '.join(s.upper() for s in found_cloud)}."))
 
     cicd = {"ci/cd","github actions","gitlab ci","jenkins","circleci"}
     if harshness >= 5 and not any(s in hard for s in cicd):
-        issues.append(("No CI/CD",
-                        "Deployment automation is standard. GitHub Actions can be learned in a day."))
+        issues.append(("Нет CI/CD",
+                        "Автоматизация деплоя — стандарт. GitHub Actions можно освоить за день."))
 
     market_missing = []
     for skill, demand in sorted(_MARKET_DEMAND.items(), key=lambda x: -x[1]):
@@ -186,9 +211,9 @@ def _roast_rules(profile: dict, harshness: int) -> dict:
         if len(market_missing) >= 3:
             break
     if market_missing:
-        issues.append(("High-demand skills missing",
-                        "Missing skills with high market demand: " + ", ".join(market_missing) +
-                        ". Prioritize learning these."))
+        issues.append(("Высокоспросные навыки отсутствуют",
+                        "Пропущены навыки с высоким рыночным спросом: " + ", ".join(market_missing) +
+                        ". Приоритизируй их изучение."))
 
     frontend_s = {"react","vue","angular","html","css","javascript","typescript"}
     backend_s  = {"python","java","go","fastapi","django","flask","spring"}
@@ -198,36 +223,36 @@ def _roast_rules(profile: dict, harshness: int) -> dict:
     has_data  = any(s in hard for s in data_s)
 
     if has_back and not has_front and not has_data:
-        praise.append(("Clear backend focus", "Specialization is visible -- that is a plus."))
+        praise.append(("Чёткая backend-специализация", "Специализация видна — это плюс."))
     elif has_front and has_back:
-        praise.append(("Fullstack stack", "Frontend + Backend present."))
+        praise.append(("Fullstack стек", "Есть и Frontend, и Backend."))
     elif has_data:
-        praise.append(("Data/ML stack", "Data science skills present."))
+        praise.append(("Data/ML стек", "Присутствуют навыки data science."))
 
     if not soft:
-        issues.append(("No soft skills",
-                        "HR and managers check soft skills. Add teamwork, communication, ownership."))
+        issues.append(("Нет soft skills",
+                        "HR и менеджеры смотрят на soft skills. Добавь teamwork, коммуникацию, ownership."))
     elif len(soft) >= 3:
-        praise.append(("Soft skills present", f"{len(soft)} listed -- sufficient."))
+        praise.append(("Soft skills есть", f"{len(soft)} указано — достаточно."))
 
     if not interests and harshness >= 4:
-        issues.append(("No interests listed",
-                        "Interests show motivation and help match with company culture."))
+        issues.append(("Нет интересов",
+                        "Интересы показывают мотивацию и помогают попасть в культуру компании."))
 
     n = len(issues)
     if n == 0:
-        verdict, text, score = "Top profile", "Almost nothing to criticize -- strong application.", 9
+        verdict, text, score = "Топовый профиль", "Почти нечего критиковать — сильная заявка.", 9
     elif n <= 2:
-        verdict, text, score = "Good profile with gaps", "Solid overall, but a few things need fixing before sending.", 7
+        verdict, text, score = "Хороший профиль с пробелами", "В целом solid, но пару вещей нужно поправить перед отправкой.", 7
     elif n <= 4:
-        verdict, text, score = "Average profile -- work needed", "Recruiters will notice these gaps. Fix top 2 issues for a big boost.", 5
+        verdict, text, score = "Средний профиль — нужна работа", "Рекрутеры заметят эти пробелы. Исправь топ-2 проблемы для резкого роста.", 5
     elif n <= 6:
-        verdict, text, score = "Weak profile -- needs rework", "Many red flags. Auto-screening will filter this out.", 3
+        verdict, text, score = "Слабый профиль — нужна переработка", "Много красных флагов. Авто-скрининг отфильтрует.", 3
     else:
-        verdict, text, score = "Critical state", "Seriously overhaul before sending -- will be rejected at first stage.", 1
+        verdict, text, score = "Критическое состояние", "Серьёзно переработай перед отправкой — отклонят на первом этапе.", 1
 
     if harshness >= 8 and score < 7:
-        text += f" (Harshness {harshness}/10 -- no sugarcoating.)"
+        text += f" (Жёсткость {harshness}/10 — без прикрас.)"
 
     return {
         "issues": issues, "praise": praise, "tips": tips,
@@ -241,16 +266,17 @@ def generate_cv_roast(profile: dict, harshness: int = 5) -> dict:
         try:
             from utils.llm_client import call_llm_json
             prompt = (
-                f"You are a harsh career mentor (harshness {harshness}/10, 10=merciless).\n"
-                "Give a deep critical analysis of this IT profile. Analyze:\n"
-                "- Stack completeness and relevance (2024 market)\n"
-                "- Skill balance (backend/frontend/devops/data)\n"
-                "- Market demand alignment\n"
-                "- What specifically to add/remove\n\n"
+                f"Ты жёсткий карьерный ментор (жёсткость {harshness}/10, 10=без пощады).\n"
+                "Дай глубокий критический разбор IT-профиля. Проанализируй:\n"
+                "- Полноту и актуальность стека (рынок 2024)\n"
+                "- Баланс навыков (backend/frontend/devops/data)\n"
+                "- Соответствие рыночному спросу\n"
+                "- Что конкретно добавить или убрать\n\n"
+                "ВАЖНО: отвечай ТОЛЬКО на русском языке.\n\n"
                 + json.dumps({k:v for k,v in profile.items() if not k.startswith("_")},
                              ensure_ascii=False, indent=2)
-                + "\n\nReturn JSON:\n"
-                + '{\n  "verdict": "one-line verdict",\n  "roast_text": "2-3 sentence honest summary",\n  "roast_score": <1-10 where 10=excellent>,\n  "issues": [["issue title", "explanation + what to do"], ...],\n  "praise": [["strength title", "why this is strong"], ...],\n  "tips": ["concrete recommendation 1", "recommendation 2"]\n}\nJSON only. Be specific and helpful.'
+                + "\n\nВерни JSON:\n"
+                + '{\n  "verdict": "краткий вердикт одной фразой",\n  "roast_text": "честное резюме в 2-3 предложениях",\n  "roast_score": <1-10, где 10=отлично>,\n  "issues": [["название проблемы", "объяснение + что делать"], ...],\n  "praise": [["название сильной стороны", "почему это хорошо"], ...],\n  "tips": ["конкретная рекомендация 1", "рекомендация 2"]\n}\nТолько JSON. Будь конкретным и полезным.'
             )
             data = call_llm_json(prompt, max_tokens=1500)
             data["source"] = "llm"
@@ -417,6 +443,119 @@ def sidebar_profile():
 
 
 # ---------------------------------------------------------------------------
+# Tab -- Predict & Dashboard
+# (Balance Wheel + Top-3 ML prediction + RPG Tech Tree + Semester Wrapped)
+# ---------------------------------------------------------------------------
+
+def tab_predict_dashboard(profile: dict):
+    st.subheader("Predict & Dashboard")
+    st.caption("ML prediction · Balance Wheel · RPG Tech Tree · Semester Wrapped")
+
+    if not profile.get("hard_skills") and not profile.get("soft_skills"):
+        st.warning("Upload your resume in CV Upload or fill the sidebar profile first.")
+        return
+
+    # ---- run ML prediction ----
+    jobs = load_jobs(ROOT / "data" / "jobs.csv")
+    predictions = predict_top_roles(profile, jobs, top_n=len(jobs))
+    top3 = predictions[:3]
+
+    # ---- KPI strip ----
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Hard Skills", len(profile.get("hard_skills", [])))
+    k2.metric("Soft Skills", len(profile.get("soft_skills", [])))
+    k3.metric("Top match",   f"{top3[0]['score_pct']}%" if top3 else "--")
+    k4.metric("Roles ≥40%",  sum(1 for r in predictions if r["score_pct"] >= 40))
+
+    st.divider()
+
+    # ---- Balance Wheel + Top-3 list ----
+    st.markdown("### ⚖️ Balance Wheel — Hard vs Soft")
+    col_wheel, col_top = st.columns([3, 2])
+    with col_wheel:
+        fig_w = fig_balance_wheel(profile)
+        st.pyplot(fig_w, use_container_width=True); plt.close(fig_w)
+    with col_top:
+        st.markdown("**Top-3 ML predictions**")
+        for i, r in enumerate(top3, 1):
+            medal = ["🥇", "🥈", "🥉"][i - 1]
+            st.markdown(
+                f"<div class='phase-card'>{medal} <b>{r['role']}</b> · {r['score_pct']}%<br>"
+                f"<small>have {len(r['matched_skills'])} · need {len(r['missing_skills'])}</small></div>",
+                unsafe_allow_html=True)
+
+        # JSON output (PDF requires JSON output from Model layer)
+        with st.expander("Raw JSON output (Model Layer)"):
+            st.json({
+                "top_3_roles": [
+                    {
+                        "role":           r["role"],
+                        "score":          r["score_pct"] / 100,
+                        "matched_skills": r["matched_skills"],
+                        "missing_skills": r["missing_skills"],
+                    } for r in top3
+                ]
+            })
+
+    st.divider()
+
+    # ---- RPG Tech Tree ----
+    st.markdown("### 🎮 RPG Tech Tree — path to your dream job")
+    role_names = [r["role"] for r in predictions]
+    target_role = st.selectbox("Choose target role:", role_names,
+                               index=0, key="tree_role")
+    target_data = next(r for r in predictions if r["role"] == target_role)
+
+    fig_t = fig_tech_tree(
+        target_role,
+        target_data["matched_skills"],
+        target_data["missing_skills"],
+    )
+    st.pyplot(fig_t, use_container_width=True); plt.close(fig_t)
+
+    if target_data["missing_skills"]:
+        st.markdown("**Locked skills — unlock with these resources:**")
+        sk = st.selectbox("Skill:", target_data["missing_skills"], key="tree_skill")
+        res = find_resources(sk)
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            st.markdown("**Docs**")
+            for u in res.get("docs", []): st.markdown(f"- [{u[:40]}…]({u})")
+        with rc2:
+            st.markdown("**Courses**")
+            for u in res.get("courses", []): st.markdown(f"- [{u[:40]}…]({u})")
+        with rc3:
+            st.markdown("**GitHub**")
+            for u in res.get("github", []): st.markdown(f"- [{u[:40]}…]({u})")
+
+    st.divider()
+
+    # ---- Semester Wrapped export ----
+    st.markdown("### 🎁 Semester Wrapped — share your year")
+    st.caption("Generates a LinkedIn-ready PNG card summarizing your skills journey")
+
+    col_btn, col_dl = st.columns([1, 1])
+    with col_btn:
+        if st.button("Generate Semester Wrapped", type="primary",
+                     use_container_width=True):
+            fig_s = fig_semester_wrapped(profile, predictions)
+            png   = fig_to_png_bytes(fig_s, dpi=180)
+            st.session_state["wrapped_png"] = png
+            plt.close(fig_s)
+
+    if "wrapped_png" in st.session_state:
+        with col_dl:
+            st.download_button(
+                "Download PNG",
+                data=st.session_state["wrapped_png"],
+                file_name="semester_wrapped.png",
+                mime="image/png",
+                use_container_width=True,
+            )
+        st.image(st.session_state["wrapped_png"], use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
 # Tab 1 -- CV Upload
 # ---------------------------------------------------------------------------
 
@@ -502,23 +641,39 @@ def _store_cv(parsed: dict):
 
 def _render_cv_card(profile: dict):
     st.divider()
-    st.markdown("### Extracted profile")
+    st.markdown("### 📋 Извлечённый профиль")
+
+    hard      = profile.get("hard_skills", [])
+    soft      = profile.get("soft_skills", [])
+    interests = profile.get("interests",   [])
 
     m1, m2, m3 = st.columns(3)
-    with m1: st.metric("Hard Skills", len(profile.get("hard_skills", [])))
-    with m2: st.metric("Soft Skills", len(profile.get("soft_skills", [])))
-    with m3: st.metric("Interests",   len(profile.get("interests",   [])))
+    with m1: st.metric("Hard Skills", len(hard))
+    with m2: st.metric("Soft Skills", len(soft))
+    with m3: st.metric("Интересы",    len(interests))
 
+    st.markdown("")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"**Name:** {profile.get('name', '--')}")
+        name = profile.get("name", "")
+        if name:
+            st.markdown(f"**Имя:** {name}")
         st.markdown("**Hard Skills:**")
-        st.markdown(tags(profile.get("hard_skills", [])), unsafe_allow_html=True)
+        if hard:
+            st.markdown(tags(hard), unsafe_allow_html=True)
+        else:
+            st.caption("не найдено")
     with c2:
         st.markdown("**Soft Skills:**")
-        st.markdown(tags(profile.get("soft_skills", [])), unsafe_allow_html=True)
-        st.markdown("**Interests:**")
-        st.markdown(tags(profile.get("interests",   [])), unsafe_allow_html=True)
+        if soft:
+            st.markdown(tags(soft), unsafe_allow_html=True)
+        else:
+            st.caption("не найдено")
+        st.markdown("**Интересы:**")
+        if interests:
+            st.markdown(tags(interests), unsafe_allow_html=True)
+        else:
+            st.caption("не найдено")
 
     st.divider()
     col_save, col_hint = st.columns(2)
@@ -974,27 +1129,31 @@ def tab_about():
 """)
     with col2:
         st.markdown("""
-**Fallback (no API key):**
-- Resume -> 150+ skill dictionary
-- Roadmap -> phase template
-- Interview -> 100+ question bank
-- CV Roast -> market demand rules
-- Resources -> static dict
-- Telegram -> 11 mock vacancies
+**Fallback (нет API ключа):**
+- Резюме -> словарь 150+ навыков
+- Roadmap -> шаблон фаз
+- Интервью -> банк 100+ вопросов
+- CV Roast -> правила рынка
+- Ресурсы -> статический словарь
+- Telegram -> 11 mock-вакансий
 
-**Stack:** Python 3.11 - Streamlit - Pandas
+**Стек:** Python 3.11 - Streamlit - Pandas
 Matplotlib - scikit-learn - Telethon - Docker
 """)
     st.divider()
     st.markdown("""
-**Quick start:**
-```bash
+**Быстрый старт:**
+```
 pip install -r requirements.txt
 streamlit run app/app.py
 ```
+**Авторизация Telegram (один раз):**
+```
+python telegram_bot/auth.py
+```
 **Docker:**
-```bash
-docker compose up --build
+```
+docker compose up -d
 ```
 """)
 
@@ -1002,30 +1161,28 @@ docker compose up --build
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-
 def main():
-    st.title("Digital Twin Career Engine")
-    st.caption("PDF CV -> Skills -> Telegram Jobs -> CV Roast -> Roadmap -> Interview")
-
     sidebar_p = sidebar_profile()
-    profile   = get_active_profile(sidebar_p)
-    profile   = _enrich_profile(profile)
+    st.session_state["sidebar_profile"] = sidebar_p
+    profile = get_active_profile(sidebar_p)
 
-    t1, t2, t3, t4, t5, t6 = st.tabs([
-        "CV Upload",
-        "CV Roast",
-        "Telegram Jobs",
-        "Roadmap",
-        "Interview",
-        "About",
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+        "\U0001f4c4 CV Upload",
+        "\U0001f3af Predict",
+        "\U0001f525 CV Roast",
+        "\U0001f4e8 Telegram Jobs",
+        "\U0001f5fa\ufe0f Roadmap",
+        "\U0001f3a4 Interview",
+        "\u2139\ufe0f About",
     ])
 
     with t1: tab_cv_upload()
-    with t2: tab_cv_roast(profile)
-    with t3: tab_telegram_jobs(profile)
-    with t4: tab_roadmap(profile)
-    with t5: tab_interview(profile)
-    with t6: tab_about()
+    with t2: tab_predict_dashboard(profile)
+    with t3: tab_cv_roast(profile)
+    with t4: tab_telegram_jobs(profile)
+    with t5: tab_roadmap(profile)
+    with t6: tab_interview(profile)
+    with t7: tab_about()
 
 
 if __name__ == "__main__":

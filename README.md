@@ -52,9 +52,15 @@
                        │  ресурсы + план + вопросы
                        ▼
  ┌──────────────────────────────────────────────────────┐
- │  4. APPLICATION LAYER — Streamlit UI (6 вкладок)     │
- │     🎯 Predict · 🗺️ Roadmap · 🎤 Interview           │
- │     💼 Job Match · 📄 Resume · ℹ️ About              │
+ │  4. APPLICATION LAYER — Streamlit UI (7 вкладок)     │
+ │     📄 CV Upload · 🎯 Predict · 🔥 CV Roast          │
+ │     📨 Telegram Jobs · 🗺️ Roadmap · 🎤 Interview      │
+ │                                                      │
+ │  Виджеты во вкладке Predict (по требованию PDF):     │
+ │     ⚖️ Balance Wheel  ── radar Hard vs Soft skills    │
+ │     🎮 RPG Tech Tree  ── locked / unlocked nodes      │
+ │     🎁 Semester Wrapped ─ shareable LinkedIn PNG      │
+ │     🤖 Live Coach (CV Roast) ── persona toggle        │
  └──────────────────────────────────────────────────────┘
                        │
  ┌──────────────────────────────────────────────────────┐
@@ -63,6 +69,38 @@
  │     .env ── LLM_API_KEY, LLM_PROVIDER                │
  └──────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🖥️ Infrastructure Layer — где что считается
+
+PDF требует явно перечислить, что крутится локально на CPU, а что — в облаке.
+
+| Компонент | Где работает | Нагрузка | Зависимости |
+|---|---|---|---|
+| Streamlit UI (`app/app.py`) | **Локально, CPU** | низкая | streamlit, matplotlib |
+| Dashboard widgets (`app/dashboard.py`) | **Локально, CPU** | низкая (matplotlib) | matplotlib, numpy |
+| Predictor — overlap (`model/predictor.py`) | **Локально, CPU** | O(N×M) ≈ ms | pandas |
+| Semantic Matcher — TF-IDF (`model/semantic_matcher.py`) | **Локально, CPU** | O(N×M) ≈ ms | scikit-learn |
+| Resume / PDF Parser (regex fallback) | **Локально, CPU** | низкая | pdfplumber / regex |
+| CV Roast (rule-based) | **Локально, CPU** | мгновенно | — |
+| Resource Finder (static dict) | **Локально, CPU** | мгновенно | — |
+| Telegram Job Scraper (mock) | **Локально, CPU** | низкая | — |
+| Telegram Job Scraper (Telethon) | **Локально + Telegram cloud** | сетевая | telethon, MTProto |
+| LLM-режим Resume Parser | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
+| LLM-режим Career Coach | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
+| LLM-режим Interview Coach | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
+| LLM-режим Resource Finder | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
+| LLM-режим CV Roast | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
+| (планируется) Agent Web Browsing | **Cloud (search API + scrape)** | сетевая | — |
+| (планируется) NotebookLM MCP Bridge | **Cloud (Google) + локальный мост** | API-вызов | notebooklm-mcp-server |
+
+**Hosting вариант:**
+
+* Локально: `python -m venv venv && streamlit run app/app.py` — всё на твоём CPU, LLM-фичи опциональны.
+* Docker: `docker compose up -d` — изолированный контейнер, тот же CPU.
+* Streamlit Community Cloud: бесплатный хостинг UI + ML, LLM-ключ задаётся через secrets.
+* Cloud LLM endpoint всегда внешний (OpenAI / Anthropic). Никакая модель не запускается локально.
 
 ---
 
@@ -346,14 +384,15 @@ genAi/
 
 | # | Вкладка | Действие | Эффект |
 |---|---------|----------|--------|
-| 1 | **PDF Upload** | Загрузить PDF резюме | Авто-извлечение навыков |
-| 2 | **Predict** | Кнопка Predict | Bar + Radar chart, топ-3 роли |
-| 3 | **Roadmap** | Выбрать роль → Generate | Поэтапный AI-план |
-| 4 | **Interview** | Выбрать роль → Вопросы | 10+ вопросов по пробелам |
-| 5 | **Job Match** | Вставить вакансию | Fit score + you_need |
-| 6 | **Telegram Jobs** | Кнопка Найти | Топ вакансий из каналов |
-| 7 | *(бонус)* | Ввести API-ключ | LLM vs fallback живьём |
-| 8 | *(бонус)* | Запустить бота | Demo через Telegram |
+| 1 | **CV Upload** | Загрузить PDF резюме | Авто-извлечение навыков |
+| 2 | **Predict** | Открыть вкладку | KPI + ⚖️ Balance Wheel + Top-3 ML + JSON |
+| 3 | **Predict** | Выбрать целевую роль | 🎮 RPG Tech Tree (locked/unlocked) |
+| 4 | **Predict** | Generate Semester Wrapped | 🎁 LinkedIn-ready PNG карточка |
+| 5 | **CV Roast** | Slider + Run Roast | 🔥 Жёсткий разбор резюме (rule / LLM) |
+| 6 | **Roadmap** | Выбрать роль → Generate | Поэтапный AI-план |
+| 7 | **Interview** | Выбрать роль → Вопросы | 10+ вопросов по пробелам |
+| 8 | **Telegram Jobs** | Кнопка Найти | Топ вакансий из каналов |
+| 9 | *(бонус)* | Ввести API-ключ | LLM vs fallback живьём |
 
 ---
 
