@@ -1,25 +1,36 @@
 {
   "name": "Алыкулов Алыдин Болотбекович",
   "hard_skills": [
-    "Java",
-    "Go",
-    "SQL",
+    "Github Actions",
+    "Spring Boot",
     "PostgreSQL",
-    "MySQL",
-    "Docker",
-    "Linux",
-    "Git",
-    "CI/CD",
-    "Spring",
+    "Gitlab Ci",
     "REST API",
-    "RabbitMQ",
-    "Jira"
+    "Rabbitmq",
+    "Spring",
+    "GitHub",
+    "GitLab",
+    "Docker",
+    "CI/CD",
+    "Linux",
+    "Nginx",
+    "MySQL",
+    "Java",
+    "Jira",
+    "GIT",
+    "SQL"
   ],
   "soft_skills": [],
   "interests": [
     "backend",
-    "data",
     "AI",
     "security"
-  ]
+  ],
+  "experience": [
+    "проектирования архитектуры приложений и взаимодействия с фронтенд-командой.\nТЕХНОЛОГИЧЕСКИЙ СТЕК\nЯзыки: Java, SQL\nФреймворки и библиотеки: Spring Boot, Spring MVC, Spring Security, Spring Data, Spring\nWebSocket, Spring Validation, Hibernate ORM, JUnit 5, Mockito, MapStruct\nБазы данных: PostgreSQL, H2, MySQL\nСообщения и интеграции: RabbitMQ, REST, WebSocket\nИнфраструктура: Docker, CI/CD (GitLab CI, GitHub Actions), Nginx\nИнструменты: Git, GitHub, GitLab, IntelliJ IDEA, Maven\nСистемы: Linux (Ubuntu), Windows\nМетодологии: REST, SOLID, Clean Architecture, Hexagonal Architecture, OOP\nКЛЮЧЕВЫЕ НАВЫКИ\n— Разработка RESTful API на Spring Boot\n— Проектирование архитектуры и бизнес-логики\n— Работа с реляционными базами данных (PostgreSQL)\n— Оптимизация SQL-запросов и индексации\n— Настройка CI/CD пайплайнов и Docker-окружений\n— Взаимодействие с брокерами сообщений (RabbitMQ)\n— Тестирование (JUnit, Mockito)\n— Работа в командной среде (Git Flow, Code Review, Merge Requests)\n— Работа с системами трекинга задач (Jira, YouTrack)\nОПЫТ РАБОТЫ\n Backend Developer (Java / Spring) | ЗАО «Шоро» | Бишкек | 8 месяцев\nПроект: Warehouse Management System (WMS)\n— Разработка REST API для управления складскими операциями\n— Интеграция с внешними системами и 1С\n— Внедрение системы ролей и аутентификации (Spring Security, JWT)\n— Реализация уведомлений и обновлений в реальном времени (WebSocket)\n— Оптимизация SQL-запросов, настройка пагинации и фильтрации\n— Покрытие модульными и интеграционными тестами (JUnit, Mockito)\nПроект: Tasker — Система управления проектами\n— Разработка модулей задач, статусов, ролей\n— Настройка авторизации и ролей доступа\n— Внедрение логики утверждения документов (Approval List)\n— Поддержка и развитие существующего функционала\nПроект: Shoro Market (мобильное приложение)\n— Реализация логики заказов и доставки акций\n— Интеграция с CRM и внешними API\n— Разработка REST-интерфейсов для мобильного клиента\n Backend Developer (Java / Spring) | InternLabs 6.0 | НУР Телеком | 6 месяцев\nПроект: Schedule System (CRM-система дежурств)\n— Разработка логики планирования и уведомлений\n— Создание Telegram-бота для отправки уведомлений\n— Реализация регистрации, восстановления пароля\n— Тестирование компонентов (JUnit, Mockito)\nТехнологии: Java, Spring Boot, PostgreSQL, Docker, REST API, WebSocket\nОБРАЗОВАНИЕ\nМеждународный университет Ала-Тоо\nФакультет информационных технологий\nСпециальность: Программная инженерия\nДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ\nДокумент воинского учета: Приписное удостоверение\nСудимости: отсутствуют\nЛичные качества: ответственность, внимательность к деталям, способность к\nсамообучению\nВладение языками:\nРусский — свободно\nАнглийский — B2 (Upper-Intermediate)\nКыргызский — разговорный"
+  ],
+  "education": [
+    "Международный университет Ала-Тоо\nФакультет информационных технологий\nСпециальность: Программная инженерия\nДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ\nДокумент воинского учета: Приписное удостоверение\nСудимости: отсутствуют\nЛичные качества: ответственность, внимательность к деталям, способность к\nсамообучению\nВладение языками:\nРусский — свободно\nАнглийский — B2 (Upper-Intermediate)\nКыргызский — разговорный"
+  ],
+  "certifications": []
 }

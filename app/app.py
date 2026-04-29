@@ -3,12 +3,14 @@ Application Layer -- Streamlit UI
 Digital Twin Career Engine v2
 
 Tabs:
-  1. CV Upload   -- PDF + text resume, auto-profile
-  2. CV Roast    -- AI critique of your CV
-  3. Telegram    -- job search + infographics (connected to CV)
-  4. Roadmap     -- GenAI career plan
-  5. Interview   -- interview preparation
-  6. About       -- architecture
+  1. CV Upload   -- PDF + text + LinkedIn + NotebookLM, auto-profile
+  2. Predict     -- ML prediction + Balance Wheel + RPG Tech Tree
+  3. CV Roast    -- AI critique of your CV
+  4. Telegram    -- job search + infographics (connected to CV)
+  5. Roadmap     -- GenAI career plan
+  6. Interview   -- interview preparation
+  7. Live Coach  -- chatbot with "Roast My Stack" toggle
+  8. About       -- architecture
 
 Run: streamlit run app/app.py
 """
@@ -39,7 +41,13 @@ from model.semantic_matcher import SKLEARN_AVAILABLE
 from agent.resource_finder  import find_resources
 from agent.career_coach     import generate_roadmap
 from agent.interview_coach  import generate_interview_questions
+from agent.live_coach       import coach_reply
 from utils.resume_parser    import parse_resume
+from utils.linkedin_parser  import parse_linkedin_pdf, parse_linkedin_text
+from utils.notebooklm_bridge import (
+    extract_from_notebook, is_mcp_available,
+    get_notebook_url, MCP_SETUP_INSTRUCTIONS,
+)
 from app.dashboard          import (
     fig_balance_wheel,
     fig_tech_tree,
@@ -595,7 +603,9 @@ def tab_cv_upload():
             unsafe_allow_html=True
         )
 
-    tab_pdf, tab_txt = st.tabs(["PDF file", "Text resume"])
+    tab_pdf, tab_txt, tab_li, tab_nb = st.tabs(
+        ["📄 PDF file", "📝 Text resume", "🔗 LinkedIn Import", "📓 NotebookLM"]
+    )
 
     with tab_pdf:
         uploaded = st.file_uploader("Choose PDF:", type=["pdf"])
@@ -623,6 +633,93 @@ def tab_cv_upload():
             with st.spinner("Analyzing..."):
                 parsed = parse_resume(text, use_llm=has_llm)
                 _store_cv(parsed)
+
+    with tab_li:
+        st.markdown("### LinkedIn Profile Import")
+        st.caption(
+            "Export your LinkedIn profile as PDF "
+            "(Settings → Data Privacy → Get a copy) or paste the text."
+        )
+        li_pdf_tab, li_txt_tab = st.tabs(["LinkedIn PDF", "LinkedIn Text"])
+        with li_pdf_tab:
+            li_file = st.file_uploader("LinkedIn PDF export:", type=["pdf"],
+                                        key="li_pdf")
+            if li_file:
+                st.info(f"`{li_file.name}` -- {li_file.size // 1024} KB")
+                if st.button("Parse LinkedIn PDF", type="primary", key="li_pdf_btn"):
+                    with st.spinner("Parsing LinkedIn PDF..."):
+                        try:
+                            parsed = parse_linkedin_pdf(li_file.read(), use_llm=has_llm)
+                            _store_cv(parsed)
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+        with li_txt_tab:
+            li_sample = (
+                "Алыкулов Алыдин\n"
+                "Backend Developer at Company\n\n"
+                "Experience\n"
+                "Company — Backend Developer — 2023-Present\n"
+                "Java, Spring Boot, PostgreSQL, Docker, Kubernetes\n\n"
+                "Skills\n"
+                "Java, Go, SQL, Docker, Linux, Git, CI/CD, REST API"
+            )
+            li_text = st.text_area("Paste LinkedIn profile text:",
+                                    value=li_sample, height=200,
+                                    key="li_text")
+            if st.button("Parse LinkedIn text", type="primary", key="li_txt_btn"):
+                with st.spinner("Analyzing LinkedIn profile..."):
+                    parsed = parse_linkedin_text(li_text, use_llm=has_llm)
+                    _store_cv(parsed)
+
+    with tab_nb:
+        st.markdown("### NotebookLM Integration (Platform Layer)")
+        mcp_ok = is_mcp_available()
+        nb_url = get_notebook_url()
+        if mcp_ok:
+            st.success("MCP Server connected ✓")
+        else:
+            st.info("MCP Server not detected — use manual text input below")
+
+        nb_url_input = st.text_input(
+            "NotebookLM Notebook URL:",
+            value=nb_url,
+            placeholder="https://notebooklm.google.com/notebook/...",
+            key="nb_url",
+        )
+
+        if nb_url_input and mcp_ok:
+            if st.button("Extract via MCP", type="primary", key="nb_mcp_btn"):
+                with st.spinner("Querying NotebookLM via MCP..."):
+                    result = extract_from_notebook(notebook_url=nb_url_input)
+                    if result.get("hard_skills"):
+                        _store_cv(result)
+                    else:
+                        st.warning("No skills extracted. Check notebook link.")
+
+        st.divider()
+        st.markdown("**Manual: paste NotebookLM summary text**")
+        nb_text = st.text_area(
+            "NotebookLM output text:",
+            height=180,
+            placeholder=(
+                "Paste the summary or audio overview text from NotebookLM.\n"
+                "Example: 'Based on the uploaded CV, the student has skills in...'"
+            ),
+            key="nb_text",
+        )
+        if st.button("Parse NotebookLM text", type="primary", key="nb_txt_btn"):
+            if nb_text and nb_text.strip():
+                with st.spinner("Extracting skills from NotebookLM..."):
+                    result = extract_from_notebook(text=nb_text)
+                    if result.get("hard_skills"):
+                        _store_cv(result)
+                    else:
+                        st.warning("No skills found in the text.")
+            else:
+                st.warning("Paste text from NotebookLM first.")
+
+        with st.expander("Setup instructions (MCP)", expanded=False):
+            st.markdown(MCP_SETUP_INSTRUCTIONS)
 
     if "cv_profile" in st.session_state:
         _render_cv_card(st.session_state["cv_profile"])
@@ -1159,6 +1256,85 @@ docker compose up -d
 
 
 # ---------------------------------------------------------------------------
+# Tab 7 -- Live Coach Chatbot
+# ---------------------------------------------------------------------------
+
+def tab_live_coach(profile):
+    st.subheader("Live Coach")
+    st.caption(
+        "Chat with your Digital Twin — mentor mode or Roast My Stack mode"
+    )
+
+    # ---- persona toggle ----
+    col_toggle, col_status = st.columns([1, 2])
+    with col_toggle:
+        roast_mode = st.toggle("🔥 Roast My Stack", value=False, key="roast_toggle")
+    persona = "roast" if roast_mode else "mentor"
+    with col_status:
+        if roast_mode:
+            st.error("ROAST MODE — aggressive tech lead persona active")
+        else:
+            st.info("Mentor mode — supportive career advisor")
+
+    has_llm = bool(os.environ.get("LLM_API_KEY", ""))
+    st.caption(f"Engine: {'LLM' if has_llm else 'Rule-based'}")
+
+    # ---- ML predictions for context ----
+    predictions = None
+    try:
+        jobs = load_jobs(ROOT / "data" / "jobs.csv")
+        predictions = predict_top_roles(profile, jobs, top_n=3)
+    except Exception:
+        pass
+
+    # ---- chat history ----
+    if "coach_messages" not in st.session_state:
+        st.session_state["coach_messages"] = []
+
+    # Display existing messages
+    for msg in st.session_state["coach_messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # ---- user input ----
+    user_input = st.chat_input(
+        "Roast my stack!" if roast_mode else "Ask your Digital Twin..."
+    )
+
+    if user_input:
+        # Append user message
+        st.session_state["coach_messages"].append(
+            {"role": "user", "content": user_input}
+        )
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # Generate reply
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..." if not roast_mode else "Preparing roast..."):
+                result = coach_reply(
+                    messages=st.session_state["coach_messages"],
+                    persona=persona,
+                    profile=profile,
+                    predictions=predictions,
+                )
+                reply = result["reply"]
+                st.markdown(reply)
+                st.caption(f"Source: {result['source']}")
+
+        st.session_state["coach_messages"].append(
+            {"role": "assistant", "content": reply}
+        )
+
+    # ---- clear chat button ----
+    if st.session_state["coach_messages"]:
+        st.divider()
+        if st.button("Clear chat", use_container_width=True):
+            st.session_state["coach_messages"] = []
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -1166,13 +1342,14 @@ def main():
     st.session_state["sidebar_profile"] = sidebar_p
     profile = get_active_profile(sidebar_p)
 
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
         "\U0001f4c4 CV Upload",
         "\U0001f3af Predict",
         "\U0001f525 CV Roast",
         "\U0001f4e8 Telegram Jobs",
         "\U0001f5fa\ufe0f Roadmap",
         "\U0001f3a4 Interview",
+        "\U0001f4ac Live Coach",
         "\u2139\ufe0f About",
     ])
 
@@ -1182,7 +1359,8 @@ def main():
     with t4: tab_telegram_jobs(profile)
     with t5: tab_roadmap(profile)
     with t6: tab_interview(profile)
-    with t7: tab_about()
+    with t7: tab_live_coach(profile)
+    with t8: tab_about()
 
 
 if __name__ == "__main__":

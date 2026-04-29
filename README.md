@@ -24,49 +24,54 @@
 ## 🏗️ Архитектура (5 слоёв)
 
 ```
- Input: profile / resume text / job description
+ Input: CV PDF / LinkedIn / NotebookLM / text
             │
             ▼
  ┌──────────────────────────────────────────────────────┐
- │  1. PLATFORM LAYER                                   │
- │     data/profile.json  ── шаблон профиля             │
- │     data/jobs.csv      ── 5 ролей × 8 навыков        │
- │     utils/resume_parser.py  ◄── LLM / Regex          │
- │     utils/job_parser.py     ◄── LLM / Regex          │
+ │  1. PLATFORM LAYER  (MCP Integration)                │
+ │     utils/notebooklm_bridge.py ◄── MCP / manual      │
+ │     utils/linkedin_parser.py   ◄── PDF / text / LLM  │
+ │     utils/resume_parser.py     ◄── LLM / Regex       │
+ │     utils/job_parser.py        ◄── LLM / Regex       │
+ │     data/profile.json  ── шаблон профиля              │
+ │     data/jobs.csv      ── 21 роль × 8 навыков         │
  └─────────────────────┬────────────────────────────────┘
                        │  структурированный профиль
                        ▼
  ┌──────────────────────────────────────────────────────┐
- │  2. MODEL LAYER                                      │
- │     model/predictor.py        ── overlap + алиасы    │
- │     model/semantic_matcher.py ── TF-IDF cosine       │
+ │  2. MODEL LAYER  (ML Prediction)                     │
+ │     model/predictor.py        ── overlap + алиасы     │
+ │     model/semantic_matcher.py ── TF-IDF cosine        │
  └─────────────────────┬────────────────────────────────┘
                        │  top-N roles + scores + missing
                        ▼
  ┌──────────────────────────────────────────────────────┐
- │  3. AGENT LAYER  (GenAI core)                        │
- │     agent/resource_finder.py ── курсы / docs / repo  │
- │     agent/career_coach.py    ── roadmap генератор    │
- │     agent/interview_coach.py ── вопросы к интервью   │
+ │  3. AGENT LAYER  (GenAI + Web Browsing)               │
+ │     agent/resource_finder.py ── LLM → Web → Static    │
+ │     agent/web_searcher.py    ── DuckDuckGo + GitHub    │
+ │     agent/career_coach.py    ── roadmap генератор      │
+ │     agent/interview_coach.py ── вопросы к интервью     │
+ │     agent/live_coach.py      ── chatbot (mentor/roast) │
  └─────────────────────┬────────────────────────────────┘
-                       │  ресурсы + план + вопросы
+                       │  ресурсы + план + вопросы + чат
                        ▼
  ┌──────────────────────────────────────────────────────┐
- │  4. APPLICATION LAYER — Streamlit UI (7 вкладок)     │
- │     📄 CV Upload · 🎯 Predict · 🔥 CV Roast          │
- │     📨 Telegram Jobs · 🗺️ Roadmap · 🎤 Interview      │
- │                                                      │
- │  Виджеты во вкладке Predict (по требованию PDF):     │
- │     ⚖️ Balance Wheel  ── radar Hard vs Soft skills    │
- │     🎮 RPG Tech Tree  ── locked / unlocked nodes      │
- │     🎁 Semester Wrapped ─ shareable LinkedIn PNG      │
- │     🤖 Live Coach (CV Roast) ── persona toggle        │
+ │  4. APPLICATION LAYER — Streamlit UI (8 вкладок)      │
+ │     📄 CV Upload (PDF · Text · LinkedIn · NotebookLM) │
+ │     🎯 Predict · 🔥 CV Roast · 📨 Telegram Jobs       │
+ │     🗺️ Roadmap · 🎤 Interview · 💬 Live Coach          │
+ │                                                       │
+ │  Виджеты:                                             │
+ │     ⚖️ Balance Wheel  ── radar Hard vs Soft skills     │
+ │     🎮 RPG Tech Tree  ── locked / unlocked nodes       │
+ │     🎁 Semester Wrapped ─ shareable LinkedIn PNG       │
+ │     🤖 Live Coach     ── "Roast My Stack" toggle       │
  └──────────────────────────────────────────────────────┘
                        │
  ┌──────────────────────────────────────────────────────┐
- │  5. INFRASTRUCTURE LAYER                             │
- │     Python 3.10 · venv · локально / Streamlit Cloud  │
- │     .env ── LLM_API_KEY, LLM_PROVIDER                │
+ │  5. INFRASTRUCTURE LAYER                              │
+ │     Python 3.10+ · venv · локально / Docker / Cloud   │
+ │     .env ── LLM_API_KEY, GITHUB_TOKEN, NOTEBOOKLM_URL │
  └──────────────────────────────────────────────────────┘
 ```
 
@@ -83,17 +88,21 @@ PDF требует явно перечислить, что крутится ло
 | Predictor — overlap (`model/predictor.py`) | **Локально, CPU** | O(N×M) ≈ ms | pandas |
 | Semantic Matcher — TF-IDF (`model/semantic_matcher.py`) | **Локально, CPU** | O(N×M) ≈ ms | scikit-learn |
 | Resume / PDF Parser (regex fallback) | **Локально, CPU** | низкая | pdfplumber / regex |
+| LinkedIn Parser (`utils/linkedin_parser.py`) | **Локально, CPU** | низкая | pdfplumber / regex |
 | CV Roast (rule-based) | **Локально, CPU** | мгновенно | — |
+| Live Coach (rule-based) | **Локально, CPU** | мгновенно | — |
 | Resource Finder (static dict) | **Локально, CPU** | мгновенно | — |
 | Telegram Job Scraper (mock) | **Локально, CPU** | низкая | — |
 | Telegram Job Scraper (Telethon) | **Локально + Telegram cloud** | сетевая | telethon, MTProto |
-| LLM-режим Resume Parser | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
-| LLM-режим Career Coach | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
-| LLM-режим Interview Coach | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
-| LLM-режим Resource Finder | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
-| LLM-режим CV Roast | **Cloud (Anthropic / OpenAI)** | API-вызов | LLM_API_KEY |
-| (планируется) Agent Web Browsing | **Cloud (search API + scrape)** | сетевая | — |
-| (планируется) NotebookLM MCP Bridge | **Cloud (Google) + локальный мост** | API-вызов | notebooklm-mcp-server |
+| Agent Web Browsing (`agent/web_searcher.py`) | **Локально → Internet** | сетевая | urllib (stdlib) |
+| NotebookLM MCP Bridge (`utils/notebooklm_bridge.py`) | **Локально → Google Cloud** | API-вызов | notebooklm-mcp-server |
+| GitHub Search API (Agent Layer) | **Локально → GitHub Cloud** | API-вызов | GITHUB_TOKEN |
+| LLM-режим Resume Parser | **Cloud (Anthropic / OpenAI / Gemini)** | API-вызов | LLM_API_KEY |
+| LLM-режим Career Coach | **Cloud (Anthropic / OpenAI / Gemini)** | API-вызов | LLM_API_KEY |
+| LLM-режим Interview Coach | **Cloud (Anthropic / OpenAI / Gemini)** | API-вызов | LLM_API_KEY |
+| LLM-режим Resource Finder | **Cloud (Anthropic / OpenAI / Gemini)** | API-вызов | LLM_API_KEY |
+| LLM-режим CV Roast | **Cloud (Anthropic / OpenAI / Gemini)** | API-вызов | LLM_API_KEY |
+| LLM-режим Live Coach | **Cloud (Anthropic / OpenAI / Gemini)** | API-вызов | LLM_API_KEY |
 
 **Hosting вариант:**
 
@@ -345,7 +354,7 @@ python telegram_bot/bot.py
 genAi/
 ├── data/
 │   ├── profile.json              # профиль пользователя
-│   ├── jobs.csv                  # 5 базовых ролей
+│   ├── jobs.csv                  # 21 роль × 8 навыков
 │   └── telegram_channels.json   # 10 IT-каналов Telegram
 │
 ├── model/
@@ -353,21 +362,28 @@ genAi/
 │   └── semantic_matcher.py      # TF-IDF cosine similarity
 │
 ├── agent/
-│   ├── resource_finder.py        # курсы / docs / GitHub
+│   ├── resource_finder.py        # курсы / docs / GitHub (LLM → Web → Static)
+│   ├── web_searcher.py          # live web search (DuckDuckGo + GitHub API)
 │   ├── career_coach.py           # GenAI roadmap
-│   └── interview_coach.py       # банк 100+ вопросов
+│   ├── interview_coach.py       # банк 100+ вопросов
+│   └── live_coach.py            # chatbot: mentor + "Roast My Stack"
 │
 ├── utils/
 │   ├── resume_parser.py          # текст → профиль (LLM / Regex)
+│   ├── linkedin_parser.py       # LinkedIn PDF/text → профиль
+│   ├── notebooklm_bridge.py     # NotebookLM MCP мост (Platform Layer)
 │   ├── job_parser.py             # вакансия → навыки + gap
-│   └── pdf_parser.py            # PDF → текст → профиль
+│   ├── pdf_parser.py            # PDF → текст → профиль
+│   └── llm_client.py            # универсальный LLM клиент
 │
 ├── telegram_bot/
 │   ├── bot.py                   # Telegram бот (/jobs, /predict, PDF)
-│   └── job_scraper.py           # парсер IT-каналов + mock
+│   ├── job_scraper.py           # парсер IT-каналов + mock
+│   └── auth.py                  # авторизация Telegram
 │
 ├── app/
-│   └── app.py                   # Streamlit UI (8 вкладок)
+│   ├── app.py                   # Streamlit UI (8 вкладок)
+│   └── dashboard.py             # Balance Wheel, RPG Tree, Wrapped
 │
 ├── tests/
 │   └── test_predictor.py        # 29 unit-тестов
@@ -385,14 +401,18 @@ genAi/
 | # | Вкладка | Действие | Эффект |
 |---|---------|----------|--------|
 | 1 | **CV Upload** | Загрузить PDF резюме | Авто-извлечение навыков |
-| 2 | **Predict** | Открыть вкладку | KPI + ⚖️ Balance Wheel + Top-3 ML + JSON |
-| 3 | **Predict** | Выбрать целевую роль | 🎮 RPG Tech Tree (locked/unlocked) |
-| 4 | **Predict** | Generate Semester Wrapped | 🎁 LinkedIn-ready PNG карточка |
-| 5 | **CV Roast** | Slider + Run Roast | 🔥 Жёсткий разбор резюме (rule / LLM) |
-| 6 | **Roadmap** | Выбрать роль → Generate | Поэтапный AI-план |
-| 7 | **Interview** | Выбрать роль → Вопросы | 10+ вопросов по пробелам |
-| 8 | **Telegram Jobs** | Кнопка Найти | Топ вакансий из каналов |
-| 9 | *(бонус)* | Ввести API-ключ | LLM vs fallback живьём |
+| 2 | **CV Upload** | LinkedIn Import → вставить текст | Парсинг LinkedIn профиля |
+| 3 | **CV Upload** | NotebookLM → вставить summary | Извлечение через MCP / текст |
+| 4 | **Predict** | Открыть вкладку | KPI + ⚖️ Balance Wheel + Top-3 ML + JSON |
+| 5 | **Predict** | Выбрать целевую роль | 🎮 RPG Tech Tree (locked/unlocked) |
+| 6 | **Predict** | Generate Semester Wrapped | 🎁 LinkedIn-ready PNG карточка |
+| 7 | **CV Roast** | Slider + Run Roast | 🔥 Жёсткий разбор резюме (rule / LLM) |
+| 8 | **Live Coach** | Написать вопрос | 💬 Mentor-режим: советы по карьере |
+| 9 | **Live Coach** | Toggle "Roast My Stack" | 🔥 Агрессивный tech-lead roast |
+| 10 | **Roadmap** | Выбрать роль → Generate | Поэтапный AI-план |
+| 11 | **Interview** | Выбрать роль → Вопросы | 10+ вопросов по пробелам |
+| 12 | **Telegram Jobs** | Кнопка Найти | Топ вакансий из каналов |
+| 13 | *(бонус)* | Ввести API-ключ | LLM vs fallback живьём |
 
 ---
 
@@ -401,26 +421,27 @@ genAi/
 ### ✅ Реализовано
 - `predictor.py` — overlap score + нормализация + 11 алиасов
 - `semantic_matcher.py` — TF-IDF cosine + hybrid score
-- `resource_finder.py` — 20+ навыков, 4 типа ресурсов (LLM + static)
+- `resource_finder.py` — 20+ навыков, 4 типа ресурсов (LLM → Web → Static)
+- `web_searcher.py` — live web search (DuckDuckGo + GitHub API)
 - `career_coach.py` — roadmap по фазам с quick wins (LLM + template)
 - `interview_coach.py` — 100+ вопросов по 15 навыкам (LLM + static)
+- `live_coach.py` — chatbot с двумя персонами: mentor + "Roast My Stack"
 - `resume_parser.py` — парсинг текста резюме (LLM + regex)
+- `linkedin_parser.py` — парсинг LinkedIn PDF / текста (LLM + regex)
+- `notebooklm_bridge.py` — MCP мост к NotebookLM (Platform Layer)
 - `job_parser.py` — парсинг вакансии + gap analysis (LLM + regex)
 - `pdf_parser.py` — PDF резюме → профиль (pdfplumber / pypdf / pdfminer)
 - `job_scraper.py` — парсинг Telegram IT-каналов + mock (8 вакансий)
 - `bot.py` — Telegram бот (/jobs, /predict, PDF upload)
 - `app.py` — Streamlit UI: 8 вкладок, bar chart, radar chart
-- Экспорт отчёта в Markdown
+- `jobs.csv` — 21 роль × 8 навыков (расширенный датасет)
+- Экспорт Semester Wrapped в PNG
 - 29 unit-тестов
 
 ### 🔜 Следующие шаги
-- [ ] PDF-парсер резюме (`pdfplumber`)
-- [ ] LinkedIn/HH.ru scraper
-- [ ] Расширение `jobs.csv` до 20+ ролей
 - [ ] Векторная БД (ChromaDB) для семантического поиска
 - [ ] История сессий / прогресс-трекер
 - [ ] Деплой на Streamlit Community Cloud
-- [ ] Dockerfile
 
 ---
 

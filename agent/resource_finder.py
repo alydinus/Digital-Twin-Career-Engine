@@ -258,6 +258,15 @@ def find_resources(skill: str, use_llm: bool = False) -> dict:
     if data:
         return {"skill": skill, "source": "static", **data}
 
+    # Live web search (Agent Layer — web browsing)
+    try:
+        from agent.web_searcher import search_and_format
+        web_result = search_and_format(skill)
+        if web_result.get("docs") or web_result.get("github"):
+            return web_result
+    except Exception as e:
+        print(f"[Agent] Web search failed ({e}), using template fallback.")
+
     # Если навык не в словаре — шаблонные ссылки
     encoded = skill.replace(" ", "+")
     result = {}
