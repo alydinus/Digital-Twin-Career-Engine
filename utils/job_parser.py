@@ -99,6 +99,7 @@ def _parse_by_regex(text: str) -> dict:
 def _parse_by_llm(text: str) -> dict:
     if not is_available():
         raise ValueError("LLM_API_KEY не задан")
+    provider = os.getenv("LLM_PROVIDER", "unknown")
 
     prompt = f"""
 Ты — парсер вакансий. Прочитай описание вакансии и верни ТОЛЬКО валидный JSON:

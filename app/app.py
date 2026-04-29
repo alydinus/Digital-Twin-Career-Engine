@@ -4,11 +4,13 @@ Digital Twin Career Engine v2
 
 Tabs:
   1. CV Upload   -- PDF + text resume, auto-profile
-  2. CV Roast    -- AI critique of your CV
-  3. Telegram    -- job search + infographics (connected to CV)
-  4. Roadmap     -- GenAI career plan
-  5. Interview   -- interview preparation
-  6. About       -- architecture
+  2. Predict     -- ML prediction + dashboard widgets
+  3. CV Roast    -- AI critique of your CV
+  4. Telegram    -- job search + infographics (connected to CV)
+  5. Roadmap     -- GenAI career plan
+  6. Live Coach  -- mentor / roast chat persona
+  7. Interview   -- interview preparation
+  8. About       -- architecture
 
 Run: streamlit run app/app.py
 """
@@ -18,7 +20,6 @@ from pathlib import Path
 from collections import Counter
 
 import streamlit as st
-import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -35,11 +36,19 @@ except ImportError:
 sys.path.insert(0, str(ROOT))
 
 from model.predictor        import load_profile, load_jobs, predict_top_roles, normalize_skills
+from model.job_dataset_trainer import load_job_dataset_csv, predict_top_roles_knn
 from model.semantic_matcher import SKLEARN_AVAILABLE
 from agent.resource_finder  import find_resources
 from agent.career_coach     import generate_roadmap
 from agent.interview_coach  import generate_interview_questions
+from agent.live_coach       import coach_reply
 from utils.resume_parser    import parse_resume
+from utils.profile_ingestion import (
+    merge_profiles,
+    parse_academic_transcript,
+    parse_linkedin_profile,
+)
+from utils.notebooklm_bridge import build_notebooklm_bridge_config
 from app.dashboard          import (
     fig_balance_wheel,
     fig_tech_tree,
@@ -121,6 +130,67 @@ def _enrich_profile(profile: dict) -> dict:
     profile.setdefault("_all_skills_norm",
                         normalize_skills(hard) | normalize_skills(soft))
     return profile
+
+
+def _predict_all_roles(profile: dict) -> list[dict]:
+    jobs = _get_active_jobs()
+    engine = st.session_state.get("prediction_engine", "Hybrid Matcher")
+    if engine == "Classical ML (KNN)":
+        return predict_top_roles_knn(profile, jobs, top_n=len(jobs))
+    return predict_top_roles(profile, jobs, top_n=len(jobs))
+
+
+def _get_active_jobs() -> list[dict]:
+    jobs = st.session_state.get("jobs_dataset")
+    if jobs:
+        return jobs
+    return load_jobs(ROOT / "data" / "jobs.csv")
+
+
+def _get_active_jobs_meta() -> dict:
+    return st.session_state.get(
+        "jobs_dataset_meta",
+        {"source": "data/jobs.csv", "rows": len(load_jobs(ROOT / "data" / "jobs.csv"))},
+    )
+
+
+def _merge_source_profile(source_profile: dict, label: str):
+    existing = st.session_state.get("cv_profile")
+    profiles = [p for p in [existing, source_profile] if p]
+    merged = merge_profiles(profiles)
+    merged = _enrich_profile(merged)
+    st.session_state["cv_profile"] = merged
+    sources = ", ".join(merged.get("_meta", {}).get("sources", []))
+    st.success(f"Merged {label}. Active sources: {sources or label}")
+
+
+def _render_resource_blocks(res: dict):
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+        st.markdown("**Docs**")
+        for u in res.get("docs", []):
+            st.markdown(f"- [{u[:50]}…]({u})")
+    with rc2:
+        st.markdown("**Courses**")
+        for u in res.get("courses", []):
+            st.markdown(f"- [{u[:50]}…]({u})")
+    with rc3:
+        st.markdown("**GitHub / Video**")
+        for u in res.get("github", []):
+            st.markdown(f"- [GitHub]({u})")
+        for u in res.get("video", [])[:2]:
+            st.markdown(f"- [Video]({u})")
+
+    st.caption(f"Resource source: {res.get('source', 'unknown')}")
+
+    if res.get("live_results"):
+        st.markdown("**Top-3 live results parsed by the agent**")
+        for item in res["live_results"][:3]:
+            excerpt = item.get("excerpt") or item.get("snippet") or ""
+            st.markdown(
+                f"- [{item['title']}]({item['url']}) · `{item.get('category', 'other')}`\n"
+                f"  {excerpt}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +501,14 @@ def sidebar_profile():
         os.environ["LLM_API_KEY"] = llm_key
         st.sidebar.success("LLM activated")
 
+    st.sidebar.divider()
+    st.sidebar.selectbox(
+        "Prediction Engine",
+        ["Hybrid Matcher", "Classical ML (KNN)"],
+        key="prediction_engine",
+        help="Hybrid uses overlap + semantic matcher. KNN uses a classical vector-space job recommender.",
+    )
+
     parse = lambda raw: [s.strip() for s in raw.split(",") if s.strip()]
     ns = normalize_skills(parse(hard_raw)) | normalize_skills(parse(soft_raw))
     return {
@@ -455,9 +533,42 @@ def tab_predict_dashboard(profile: dict):
         st.warning("Upload your resume in CV Upload or fill the sidebar profile first.")
         return
 
+    with st.expander("Classical ML dataset", expanded=False):
+        meta = _get_active_jobs_meta()
+        st.caption(
+            f"Active dataset: `{meta.get('source', 'data/jobs.csv')}` · "
+            f"{meta.get('rows', 0)} roles · engine: `{st.session_state.get('prediction_engine', 'Hybrid Matcher')}`"
+        )
+        job_csv = st.file_uploader(
+            "Upload tech jobs CSV",
+            type=["csv"],
+            key="jobs_dataset_upload",
+            help="Expected columns: role + required_skills. Optional: description/job_description/text.",
+        )
+        c_up, c_clear = st.columns(2)
+        with c_up:
+            if st.button("Load Dataset", key="load_jobs_dataset", use_container_width=True):
+                if job_csv is None:
+                    st.warning("Choose a CSV file first.")
+                else:
+                    jobs = load_job_dataset_csv(job_csv.getvalue())
+                    if not jobs:
+                        st.error("Could not parse any roles from the uploaded CSV.")
+                    else:
+                        st.session_state["jobs_dataset"] = jobs
+                        st.session_state["jobs_dataset_meta"] = {
+                            "source": job_csv.name,
+                            "rows": len(jobs),
+                        }
+                        st.success(f"Loaded {len(jobs)} roles from {job_csv.name}")
+        with c_clear:
+            if st.button("Use Bundled Dataset", key="clear_jobs_dataset", use_container_width=True):
+                st.session_state.pop("jobs_dataset", None)
+                st.session_state.pop("jobs_dataset_meta", None)
+                st.success("Switched back to data/jobs.csv")
+
     # ---- run ML prediction ----
-    jobs = load_jobs(ROOT / "data" / "jobs.csv")
-    predictions = predict_top_roles(profile, jobs, top_n=len(jobs))
+    predictions = _predict_all_roles(profile)
     top3 = predictions[:3]
 
     # ---- KPI strip ----
@@ -481,7 +592,7 @@ def tab_predict_dashboard(profile: dict):
             medal = ["🥇", "🥈", "🥉"][i - 1]
             st.markdown(
                 f"<div class='phase-card'>{medal} <b>{r['role']}</b> · {r['score_pct']}%<br>"
-                f"<small>have {len(r['matched_skills'])} · need {len(r['missing_skills'])}</small></div>",
+                f"<small>{r.get('match_method', 'overlap')} · have {len(r['matched_skills'])} · need {len(r['missing_skills'])}</small></div>",
                 unsafe_allow_html=True)
 
         # JSON output (PDF requires JSON output from Model layer)
@@ -491,6 +602,9 @@ def tab_predict_dashboard(profile: dict):
                     {
                         "role":           r["role"],
                         "score":          r["score_pct"] / 100,
+                        "match_method":   r.get("match_method", "overlap"),
+                        "overlap_score":  r.get("overlap_score", r["score_pct"] / 100),
+                        "semantic_score": r.get("semantic_score", 0.0),
                         "matched_skills": r["matched_skills"],
                         "missing_skills": r["missing_skills"],
                     } for r in top3
@@ -501,6 +615,11 @@ def tab_predict_dashboard(profile: dict):
 
     # ---- RPG Tech Tree ----
     st.markdown("### 🎮 RPG Tech Tree — path to your dream job")
+    live_search = st.toggle(
+        "Live web search for missing-skill resources",
+        value=False,
+        help="Runs the Agent Layer against live search results and parses the top 3 pages.",
+    )
     role_names = [r["role"] for r in predictions]
     target_role = st.selectbox("Choose target role:", role_names,
                                index=0, key="tree_role")
@@ -516,17 +635,8 @@ def tab_predict_dashboard(profile: dict):
     if target_data["missing_skills"]:
         st.markdown("**Locked skills — unlock with these resources:**")
         sk = st.selectbox("Skill:", target_data["missing_skills"], key="tree_skill")
-        res = find_resources(sk)
-        rc1, rc2, rc3 = st.columns(3)
-        with rc1:
-            st.markdown("**Docs**")
-            for u in res.get("docs", []): st.markdown(f"- [{u[:40]}…]({u})")
-        with rc2:
-            st.markdown("**Courses**")
-            for u in res.get("courses", []): st.markdown(f"- [{u[:40]}…]({u})")
-        with rc3:
-            st.markdown("**GitHub**")
-            for u in res.get("github", []): st.markdown(f"- [{u[:40]}…]({u})")
+        res = find_resources(sk, prefer_live=live_search, target_role=target_role)
+        _render_resource_blocks(res)
 
     st.divider()
 
@@ -624,6 +734,55 @@ def tab_cv_upload():
                 parsed = parse_resume(text, use_llm=has_llm)
                 _store_cv(parsed)
 
+    st.divider()
+    st.markdown("### Additional Required Inputs")
+    st.caption("PDF requires LinkedIn profile and Academic Transcript as additional sources.")
+
+    src1, src2 = st.tabs(["LinkedIn profile", "Academic transcript"])
+
+    with src1:
+        linkedin_sample = (
+            "Alydin Alykulov\n"
+            "Backend / Platform Engineer\n"
+            "About: Building backend services with Java, Go, Docker, PostgreSQL and CI/CD.\n"
+            "Experience: Spring Boot microservices, REST APIs, RabbitMQ, Linux, Git.\n"
+            "Skills: Java, Go, PostgreSQL, MySQL, Docker, Linux, Git, CI/CD, Spring, REST API, RabbitMQ\n"
+        )
+        linkedin_text = st.text_area(
+            "Paste LinkedIn profile text:",
+            value=linkedin_sample,
+            height=180,
+            key="linkedin_text",
+        )
+        if st.button("Ingest LinkedIn", key="ingest_linkedin"):
+            with st.spinner("Parsing LinkedIn profile..."):
+                parsed = parse_linkedin_profile(linkedin_text, use_llm=has_llm)
+                _merge_source_profile(parsed, "LinkedIn")
+
+    with src2:
+        transcript_sample = (
+            "Academic Transcript\n"
+            "Courses: Data Structures, Algorithms, Database Systems, Operating Systems,\n"
+            "Software Engineering, Machine Learning, Statistics, Linear Algebra, Cloud Computing\n"
+            "GPA: 3.72/4.0\n"
+        )
+        transcript_text = st.text_area(
+            "Paste transcript text:",
+            value=transcript_sample,
+            height=160,
+            key="transcript_text",
+        )
+        transcript_file = st.file_uploader(
+            "Or upload transcript (.txt/.md/.pdf)",
+            type=["txt", "md", "pdf"],
+            key="transcript_upload",
+        )
+        if st.button("Ingest Transcript", key="ingest_transcript"):
+            with st.spinner("Parsing transcript..."):
+                raw_transcript = _read_text_upload(transcript_file) if transcript_file else transcript_text
+                parsed = parse_academic_transcript(raw_transcript)
+                _merge_source_profile(parsed, "Transcript")
+
     if "cv_profile" in st.session_state:
         _render_cv_card(st.session_state["cv_profile"])
 
@@ -639,6 +798,17 @@ def _store_cv(parsed: dict):
     st.success(msg)
 
 
+def _read_text_upload(uploaded_file) -> str:
+    if not uploaded_file:
+        return ""
+    name = uploaded_file.name.lower()
+    content = uploaded_file.read()
+    if name.endswith(".pdf"):
+        from utils.pdf_parser import extract_text_from_bytes
+        return extract_text_from_bytes(content)
+    return content.decode("utf-8", errors="ignore")
+
+
 def _render_cv_card(profile: dict):
     st.divider()
     st.markdown("### 📋 Извлечённый профиль")
@@ -646,11 +816,19 @@ def _render_cv_card(profile: dict):
     hard      = profile.get("hard_skills", [])
     soft      = profile.get("soft_skills", [])
     interests = profile.get("interests",   [])
+    meta      = profile.get("_meta", {})
+    sources   = meta.get("sources", [])
+    gpa       = meta.get("gpa")
 
     m1, m2, m3 = st.columns(3)
     with m1: st.metric("Hard Skills", len(hard))
     with m2: st.metric("Soft Skills", len(soft))
     with m3: st.metric("Интересы",    len(interests))
+
+    if sources:
+        st.caption("Sources: " + " · ".join(sources))
+    if gpa is not None:
+        st.caption(f"Transcript GPA detected: {gpa}")
 
     st.markdown("")
     c1, c2 = st.columns(2)
@@ -806,6 +984,12 @@ def tab_telegram_jobs(profile):
     with col3:
         max_cards = st.slider("Cards to show:", 3, 20, 8)
 
+    live_search = st.toggle(
+        "Live web search for missing skills",
+        value=False,
+        help="For each selected gap skill the agent can browse live results instead of only static links.",
+    )
+
     with st.expander("Channels and settings", expanded=False):
         with open(ROOT / "data" / "telegram_channels.json", encoding="utf-8") as ff:
             ch_cfg = json.load(ff)
@@ -935,14 +1119,8 @@ def tab_telegram_jobs(profile):
 
             if j.you_need:
                 sk = st.selectbox("Resources for skill:", j.you_need, key=f"r_{j.id}")
-                res = find_resources(sk)
-                rr1, rr2, rr3 = st.columns(3)
-                with rr1:
-                    for u in res.get("docs",    []): st.markdown(f"[Docs]({u})")
-                with rr2:
-                    for u in res.get("courses", []): st.markdown(f"[Course]({u})")
-                with rr3:
-                    for u in res.get("github",  []): st.markdown(f"[GitHub]({u})")
+                res = find_resources(sk, prefer_live=live_search, target_role=j.role_name)
+                _render_resource_blocks(res)
 
 
 # ---------------------------------------------------------------------------
@@ -955,10 +1133,10 @@ def tab_roadmap(profile):
         st.markdown('<div class="cv-banner">Using profile from your CV</div>',
                     unsafe_allow_html=True)
 
-    jobs       = load_jobs(ROOT / "data" / "jobs.csv")
+    jobs       = _get_active_jobs()
     role_names = [j["role"] for j in jobs]
     target     = st.selectbox("Target role:", role_names)
-    results    = predict_top_roles(profile, jobs, top_n=len(jobs))
+    results    = _predict_all_roles(profile)
     role_data  = next((r for r in results if r["role"] == target), None)
     if not role_data:
         return
@@ -1010,7 +1188,69 @@ def tab_roadmap(profile):
 
 
 # ---------------------------------------------------------------------------
-# Tab 5 -- Interview Coach
+# Tab 5 -- Live Coach
+# ---------------------------------------------------------------------------
+
+def tab_live_coach(profile):
+    st.subheader("Live Coach Chatbot")
+    st.caption("Talk to your Digital Twin. Toggle Roast My Stack to switch persona.")
+
+    if not profile.get("hard_skills") and not profile.get("soft_skills"):
+        st.warning("Upload your resume in CV Upload or fill the sidebar profile first.")
+        return
+
+    predictions = _predict_all_roles(profile)
+    top_role = predictions[0]["role"] if predictions else "Unknown Role"
+    top_gap = predictions[0]["missing_skills"][0] if predictions and predictions[0]["missing_skills"] else "focus"
+
+    persona_roast = st.toggle(
+        "Roast My Stack",
+        value=False,
+        help="Switches the Digital Twin into an aggressive tech-lead persona.",
+    )
+    persona = "roast" if persona_roast else "mentor"
+    history_key = f"coach_history_{persona}"
+
+    if history_key not in st.session_state:
+        intro = (
+            f"Разбираем цель `{top_role}`. Главный gap сейчас: `{top_gap}`. "
+            "Спрашивай про roadmap, проект, интервью или рынок."
+            if persona == "mentor"
+            else f"Цель `{top_role}`, а главный пробел у тебя `{top_gap}`. "
+                 "Задавай вопрос, я скажу, где у тебя реально течёт стек."
+        )
+        st.session_state[history_key] = [{"role": "assistant", "content": intro}]
+
+    st.caption(f"Injected ML context: top role = {top_role} · priority gap = {top_gap}")
+
+    for msg in st.session_state[history_key]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    prompt = st.chat_input("Спроси про карьеру, skill gap, pet-project или подготовку к интервью")
+    if prompt:
+        st.session_state[history_key].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply = coach_reply(
+                    st.session_state[history_key],
+                    persona=persona,
+                    profile=profile,
+                    predictions=predictions,
+                )
+                st.markdown(reply["reply"])
+
+        st.session_state[history_key].append({
+            "role": "assistant",
+            "content": reply["reply"],
+        })
+
+
+# ---------------------------------------------------------------------------
+# Tab 6 -- Interview Coach
 # ---------------------------------------------------------------------------
 
 def tab_interview(profile):
@@ -1020,10 +1260,10 @@ def tab_interview(profile):
         st.markdown('<div class="cv-banner">Using profile from your CV</div>',
                     unsafe_allow_html=True)
 
-    jobs       = load_jobs(ROOT / "data" / "jobs.csv")
+    jobs       = _get_active_jobs()
     role_names = [j["role"] for j in jobs]
     target     = st.selectbox("Target role:", role_names, key="interview_role")
-    results    = predict_top_roles(profile, jobs, top_n=len(jobs))
+    results    = _predict_all_roles(profile)
     role_data  = next((r for r in results if r["role"] == target), None)
     if not role_data:
         return
@@ -1082,7 +1322,7 @@ def tab_interview(profile):
 
 
 # ---------------------------------------------------------------------------
-# Tab 6 -- About
+# Tab 7 -- About
 # ---------------------------------------------------------------------------
 
 def tab_about():
@@ -1093,24 +1333,27 @@ def tab_about():
       v                       v                       v
  +------------------------------------------------------------+
  | Platform Layer                                             |
- | pdf_parser  resume_parser  job_scraper (Telethon)          |
+ | pdf_parser  resume_parser  job_scraper                     |
+ | notebooklm_bridge (MCP config for Antigravity/NotebookLM)  |
  +------------------------+-----------------------------------+
                           v
  +------------------------------------------------------------+
  | Model Layer                                                |
- | predictor.py (overlap)   semantic_matcher (TF-IDF)         |
+ | predictor.py (hybrid: overlap + TF-IDF semantic)           |
+ | semantic_matcher.py                                        |
  +------------------------+-----------------------------------+
                           v
  +------------------------------------------------------------+
- | Agent Layer  (LLM + fallback)                              |
- | career_coach  interview_coach  resource_finder             |
+ | Agent Layer                                                |
+ | career_coach  interview_coach  live_coach                  |
+ | resource_finder (live search + HTML parse top-3 results)   |
  | cv_roaster (rule-based + LLM)                              |
  +------------------------+-----------------------------------+
                           v
  +------------------------------------------------------------+
- | Application Layer -- Streamlit 6 tabs                      |
- | CV Upload -> CV Roast -> Telegram Jobs                     |
- |          -> Roadmap   -> Interview                         |
+ | Application Layer -- Streamlit dashboard                   |
+ | CV Upload -> Predict -> CV Roast -> Telegram Jobs          |
+ | -> Roadmap -> Live Coach -> Interview -> About             |
  +------------------------------------------------------------+
 """, language="text")
 
@@ -1120,12 +1363,16 @@ def tab_about():
 **GenAI / ML:**
 - `pdf_parser` - pdfplumber + LLM
 - `resume_parser` - LLM / regex (150+ skills)
+- `profile_ingestion` - LinkedIn + transcript -> merged profile
+- `predictor` - hybrid ML score (overlap + semantic)
+- `job_dataset_trainer` - classical ML KNN recommender on uploaded CSV
 - `career_coach` - LLM roadmap
 - `interview_coach` - LLM questions
+- `live_coach` - chat persona + Roast My Stack
 - `cv_roaster` - LLM + rule-based critique
-- `resource_finder` - LLM + static dict
-- `semantic_matcher` - TF-IDF cosine
-- `job_scraper` - Telethon parser
+- `resource_finder` - live web search + HTML parsing
+- `notebooklm_bridge` - MCP/Antigravity prompt config
+- `job_scraper` - Telethon parser / mock jobs
 """)
     with col2:
         st.markdown("""
@@ -1133,12 +1380,38 @@ def tab_about():
 - Резюме -> словарь 150+ навыков
 - Roadmap -> шаблон фаз
 - Интервью -> банк 100+ вопросов
+- Live Coach -> rule-based persona replies
 - CV Roast -> правила рынка
-- Ресурсы -> статический словарь
+- Ресурсы -> статический словарь, если live search недоступен
 - Telegram -> 11 mock-вакансий
 
 **Стек:** Python 3.11 - Streamlit - Pandas
-Matplotlib - scikit-learn - Telethon - Docker
+Matplotlib - scikit-learn - Requests - BeautifulSoup - Telethon - Docker
+""")
+    st.divider()
+    dataset_meta = _get_active_jobs_meta()
+    st.caption(
+        f"Active prediction engine: {st.session_state.get('prediction_engine', 'Hybrid Matcher')} · "
+        f"dataset: {dataset_meta.get('source', 'data/jobs.csv')} ({dataset_meta.get('rows', 0)} roles)"
+    )
+    st.caption("Required inputs from the PDF are supported in-app: Resume, LinkedIn profile, Academic Transcript.")
+
+    st.divider()
+    nb_url = os.environ.get("NOTEBOOKLM_NOTEBOOK_URL", "").strip()
+    if nb_url:
+        try:
+            bridge = build_notebooklm_bridge_config(nb_url)
+            with st.expander("NotebookLM MCP bridge config", expanded=False):
+                st.json(bridge)
+        except Exception as e:
+            st.warning(f"NotebookLM config error: {e}")
+    else:
+        st.info("Set NOTEBOOKLM_NOTEBOOK_URL in .env to render the MCP bridge config.")
+
+    st.markdown("""
+**Infrastructure split:**
+- Local CPU: Streamlit UI, predictor, semantic matcher, PDF parsing, charts.
+- Cloud/API: LLM calls, Telegram network access, live web search, NotebookLM MCP server.
 """)
     st.divider()
     st.markdown("""
@@ -1166,12 +1439,13 @@ def main():
     st.session_state["sidebar_profile"] = sidebar_p
     profile = get_active_profile(sidebar_p)
 
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
         "\U0001f4c4 CV Upload",
         "\U0001f3af Predict",
         "\U0001f525 CV Roast",
         "\U0001f4e8 Telegram Jobs",
         "\U0001f5fa\ufe0f Roadmap",
+        "\U0001f916 Live Coach",
         "\U0001f3a4 Interview",
         "\u2139\ufe0f About",
     ])
@@ -1181,8 +1455,9 @@ def main():
     with t3: tab_cv_roast(profile)
     with t4: tab_telegram_jobs(profile)
     with t5: tab_roadmap(profile)
-    with t6: tab_interview(profile)
-    with t7: tab_about()
+    with t6: tab_live_coach(profile)
+    with t7: tab_interview(profile)
+    with t8: tab_about()
 
 
 if __name__ == "__main__":
