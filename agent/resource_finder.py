@@ -3,20 +3,21 @@ Agent Layer — поиск обучающих ресурсов по навыку
 
 Режимы работы:
   1. Fallback (по умолчанию) — статический словарь SKILL_RESOURCES.
-  2. LLM-режим (опционально) — если в .env задан LLM_API_KEY,
+  2. Live web search         — real-time search + HTML parsing top-3 results.
+  3. LLM-режим (опционально) — если в .env задан LLM_API_KEY,
      используется Anthropic Claude для генерации актуальных ресурсов.
 
-Future hooks:
-  - GitHub Search API (GITHUB_TOKEN в .env) для поиска репозиториев.
-  - Парсер курсов с Coursera/Udemy API.
-  - Замена статического словаря на векторный поиск по базе ресурсов.
+Live-search режим нужен для требования PDF:
+  агент должен взять missing skill, выполнить live search, распарсить HTML
+  top-3 результатов и вернуть актуальные ресурсы.
 """
 
 from __future__ import annotations
-from utils.llm_client import call_llm_json, is_available
+from utils.llm_client import call_llm_json
 
+import html
 import os
-from typing import Optional
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 # ---------------------------------------------------------------------------
 # Статический словарь ресурсов (fallback)
@@ -219,12 +220,165 @@ _DEFAULT_RESOURCE = {
     "video":   ["https://www.youtube.com/results?search_query={skill}+tutorial"],
 }
 
+_LIVE_SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/?q={query}"
+
+_CATEGORY_KEYWORDS = {
+    "docs": ("docs", "documentation", "manual", "guide", "official"),
+    "courses": ("course", "bootcamp", "academy", "learn", "training"),
+    "github": ("github", "gitlab", "repo", "repository"),
+    "video": ("youtube", "video", "playlist", "watch"),
+    "event": ("hackathon", "conference", "meetup", "event", "cfp"),
+}
+
+
+def _build_live_query(skill: str, target_role: str | None = None) -> str:
+    parts = [skill.strip(), "tutorial documentation github repo"]
+    if target_role:
+        parts.insert(1, target_role.strip())
+    return " ".join(p for p in parts if p).strip()
+
+
+def _categorize_result(url: str, title: str = "", snippet: str = "") -> str:
+    haystack = f"{url} {title} {snippet}".lower()
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        if any(word in haystack for word in keywords):
+            return category
+    return "other"
+
+
+def _unwrap_search_url(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if "uddg" in query and query["uddg"]:
+        return unquote(query["uddg"][0])
+    if url.startswith("//"):
+        return f"https:{url}"
+    return url
+
+
+def _fetch_url(url: str, timeout: int = 10) -> str:
+    import requests
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+    }
+    response = requests.get(url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response.text
+
+
+def _extract_search_results(search_html: str, limit: int = 3) -> list[dict]:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise ImportError("pip install beautifulsoup4") from exc
+
+    soup = BeautifulSoup(search_html, "html.parser")
+    results = []
+
+    for node in soup.select(".result") or soup.select(".result__body"):
+        link = node.select_one("a.result__a") or node.select_one("a")
+        if not link:
+            continue
+        url = (link.get("href") or "").strip()
+        title = " ".join(link.get_text(" ", strip=True).split())
+        snippet_node = (
+            node.select_one(".result__snippet")
+            or node.select_one(".result-snippet")
+            or node.select_one(".snippet")
+        )
+        snippet = ""
+        if snippet_node:
+            snippet = " ".join(snippet_node.get_text(" ", strip=True).split())
+        if title and url:
+            clean_url = _unwrap_search_url(html.unescape(url))
+            results.append({
+                "title": title,
+                "url": clean_url,
+                "snippet": snippet,
+                "category": _categorize_result(clean_url, title, snippet),
+            })
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+def _extract_page_excerpt(page_html: str, max_chars: int = 280) -> str:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise ImportError("pip install beautifulsoup4") from exc
+
+    soup = BeautifulSoup(page_html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    text = " ".join(soup.get_text(" ", strip=True).split())
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rsplit(" ", 1)[0].strip()
+    return f"{cut}..."
+
+
+def _aggregate_live_resources(skill: str, results: list[dict]) -> dict:
+    grouped = {"docs": [], "courses": [], "github": [], "video": [], "event": []}
+
+    for item in results:
+        category = item.get("category", "other")
+        if category in grouped:
+            grouped[category].append(item["url"])
+
+    fallback = SKILL_RESOURCES.get(skill.lower(), {})
+    for key in ("docs", "courses", "github", "video"):
+        grouped[key] = grouped[key][:3] or fallback.get(key, [])
+
+    return grouped
+
+
+def _live_search_resources(skill: str, target_role: str | None = None, limit: int = 3) -> dict:
+    query = _build_live_query(skill, target_role)
+    encoded_query = quote_plus(query)
+    search_url = _LIVE_SEARCH_ENDPOINT.format(query=encoded_query)
+
+    search_html = _fetch_url(search_url)
+    results = _extract_search_results(search_html, limit=limit)
+    enriched = []
+
+    for item in results:
+        excerpt = ""
+        try:
+            page_html = _fetch_url(item["url"])
+            excerpt = _extract_page_excerpt(page_html)
+        except Exception:
+            excerpt = item.get("snippet", "")
+
+        enriched.append({**item, "excerpt": excerpt})
+
+    aggregated = _aggregate_live_resources(skill, enriched)
+    return {
+        "skill": skill,
+        "source": "live_search",
+        "query": query,
+        "search_url": search_url,
+        "live_results": enriched,
+        **aggregated,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Основная функция агента
 # ---------------------------------------------------------------------------
 
-def find_resources(skill: str, use_llm: bool = False) -> dict:
+def find_resources(
+    skill: str,
+    use_llm: bool = False,
+    prefer_live: bool = False,
+    target_role: str | None = None,
+) -> dict:
     """
     Возвращает ресурсы для изучения указанного навыка.
 
@@ -243,6 +397,13 @@ def find_resources(skill: str, use_llm: bool = False) -> dict:
         }
     """
     skill_key = skill.strip().lower()
+
+    # Live-search режим для Agent Layer.
+    if prefer_live:
+        try:
+            return _live_search_resources(skill, target_role=target_role, limit=3)
+        except Exception as e:
+            print(f"[Agent] Live search недоступен ({e}), переключаюсь на fallback.")
 
     # LLM-режим (если доступен)
     if use_llm or os.getenv("LLM_API_KEY"):
@@ -275,9 +436,22 @@ def find_resources(skill: str, use_llm: bool = False) -> dict:
     return {"skill": skill, "source": "template", **result}
 
 
-def find_resources_batch(skills: list[str], use_llm: bool = False) -> list[dict]:
+def find_resources_batch(
+    skills: list[str],
+    use_llm: bool = False,
+    prefer_live: bool = False,
+    target_role: str | None = None,
+) -> list[dict]:
     """Возвращает ресурсы для списка навыков."""
-    return [find_resources(s, use_llm=use_llm) for s in skills]
+    return [
+        find_resources(
+            s,
+            use_llm=use_llm,
+            prefer_live=prefer_live,
+            target_role=target_role,
+        )
+        for s in skills
+    ]
 
 
 # ---------------------------------------------------------------------------

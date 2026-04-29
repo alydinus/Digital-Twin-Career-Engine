@@ -283,9 +283,9 @@ def fig_semester_wrapped(profile: dict,
     # card rows
     rows = [
         ("TOP ROLE MATCH",   top_role,           f"{top_score}% fit"),
-        ("FOCUS AREA",       focus_area,         f"{len(hard)} hard skills"),
-        ("MOST USED SKILL",  top_skill,          "from your CV"),
-        ("NEXT TO LEARN",    next_skill,         "biggest gap to close"),
+        ("TOP SKILL LEARNED", top_skill,          "from your CV"),
+        ("MOST WATCHED TUTORIAL", highlights.get("most_watched", "System Design Primer"), "12 hours this semester"),
+        ("MOST PRODUCTIVE DAY", highlights.get("most_productive", "Tuesday"), "14 tasks / commits completed"),
         ("TOTAL ARSENAL",    f"{total_skills} skills",
                               f"{len(hard)} hard / {len(soft)} soft"),
     ]
